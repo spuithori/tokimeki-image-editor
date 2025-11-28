@@ -1,0 +1,32 @@
+{
+  "editor": {
+    "title": "画像エディター",
+    "upload": "画像をアップロード",
+    "crop": "トリミング",
+    "rotate": "回転",
+    "flip": "反転",
+    "flipHorizontal": "左右反転",
+    "flipVertical": "上下反転",
+    "rotateLeft": "左に回転",
+    "rotateRight": "右に回転",
+    "export": "エクスポート",
+    "reset": "リセット",
+    "apply": "適用",
+    "cancel": "キャンセル",
+    "zoom": "ズーム",
+    "quality": "品質",
+    "format": "形式",
+    "download": "ダウンロード",
+    "dropImageHere": "画像をドロップまたはクリックしてアップロード",
+    "noImage": "画像が読み込まれていません",
+    "undo": "元に戻す",
+    "redo": "やり直す"
+  },
+  "toolbar": {
+    "crop": "トリミングツール",
+    "rotate": "回転・反転",
+    "export": "画像をエクスポート",
+    "undo": "元に戻す (Ctrl+Z)",
+    "redo": "やり直す (Ctrl+Shift+Z)"
+  }
+}

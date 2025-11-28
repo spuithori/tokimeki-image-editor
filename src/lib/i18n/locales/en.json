@@ -1,0 +1,32 @@
+{
+  "editor": {
+    "title": "Image Editor",
+    "upload": "Upload Image",
+    "crop": "Crop",
+    "rotate": "Rotate",
+    "flip": "Flip",
+    "flipHorizontal": "Flip Horizontal",
+    "flipVertical": "Flip Vertical",
+    "rotateLeft": "Rotate Left",
+    "rotateRight": "Rotate Right",
+    "export": "Export",
+    "reset": "Reset",
+    "apply": "Apply",
+    "cancel": "Cancel",
+    "zoom": "Zoom",
+    "quality": "Quality",
+    "format": "Format",
+    "download": "Download",
+    "dropImageHere": "Drop image here or click to upload",
+    "noImage": "No image loaded",
+    "undo": "Undo",
+    "redo": "Redo"
+  },
+  "toolbar": {
+    "crop": "Crop Tool",
+    "rotate": "Rotate & Flip",
+    "export": "Export Image",
+    "undo": "Undo (Ctrl+Z)",
+    "redo": "Redo (Ctrl+Shift+Z)"
+  }
+}
