@@ -241,16 +241,13 @@
 
   .editor-overlay {
     position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh;
+    inset: 0;
     background: #0a0a0a;
     z-index: 9999;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 2rem;
-    overflow: auto;
+    padding: 1rem;
+    box-sizing: border-box;
   }
 </style>

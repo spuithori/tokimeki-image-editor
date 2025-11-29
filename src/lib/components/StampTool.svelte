@@ -536,6 +536,10 @@
     width: 100%;
     height: 100%;
     pointer-events: none;
+
+    @media (max-width: 767px) {
+
+    }
   }
 
   .stamp-palette {
@@ -552,18 +556,34 @@
     pointer-events: all;
     backdrop-filter: blur(10px);
     z-index: 1;
+
+    @media (max-width: 767px) {
+      top: auto;
+      bottom: 0;
+      right: 0;
+      left: 0;
+      width: auto;
+    }
   }
 
   .stamp-palette h3 {
     margin: 0 0 1rem 0;
     font-size: 1rem;
     color: #fff;
+
+    @media (max-width: 767px) {
+      display: none;
+    }
   }
 
   .stamp-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
     gap: 0.5rem;
+
+    @media (max-width: 767px) {
+      display: flex;
+    }
   }
 
   .stamp-item {
@@ -578,6 +598,10 @@
     align-items: center;
     justify-content: center;
     padding: 0;
+
+    @media (max-width: 767px) {
+      flex-shrink: 0;
+    }
   }
 
   .stamp-item:hover {

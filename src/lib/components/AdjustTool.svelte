@@ -217,12 +217,23 @@
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 1rem;
+
+    @media (max-width: 767px) {
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+      max-height: 35vh;
+      overflow-y: auto;
+    }
   }
 
   .adjustment-control {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+
+    @media (max-width: 767px) {
+      gap: 0.3rem;
+    }
   }
 
   .adjustment-control label {
@@ -231,6 +242,10 @@
     align-items: center;
     font-size: 0.85rem;
     color: #ccc;
+
+    @media (max-width: 767px) {
+      font-size: 0.8rem;
+    }
   }
 
   .adjustment-control .value {

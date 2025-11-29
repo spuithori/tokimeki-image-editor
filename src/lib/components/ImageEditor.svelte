@@ -1,5 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
+  import { Redo2, RotateCcw, Undo2 } from 'lucide-svelte';
   import type { EditorMode, EditorState, CropArea, TransformState, Viewport, AdjustmentsState, BlurArea } from '../types';
   import { loadImage, calculateFitScale, exportCanvas, downloadImage, applyTransform } from '../utils/canvas';
   import { createEmptyHistory, createSnapshot, addToHistory, undo, redo, canUndo, canRedo } from '../utils/history';
@@ -69,6 +70,9 @@
   let adjustmentThrottleTimer: number | null = null;
   let pendingAdjustments: Partial<AdjustmentsState> | null = null;
   let lastInitialImage = $state<File | string | undefined>(undefined);
+
+  let clientWidth = $state<number | undefined>(undefined);
+  let clientHeight = $state<number | undefined>(undefined);
 
   // Load initial image when provided
   $effect(() => {
@@ -415,14 +419,41 @@
 <div class="image-editor" style="width: {width}px;">
   {#if !isStandalone && state.imageData.original}
     <div class="embedded-controls">
-      <p class="experimental">BETA</p>
-
       <button class="embedded-btn embedded-btn-cancel" onclick={handleCancel}>
         {$_('editor.cancel')}
       </button>
       <button class="embedded-btn embedded-btn-apply" onclick={handleComplete}>
         {$_('editor.apply')}
       </button>
+
+      <div class="editor-history-controls">
+        <button
+                class="editor-history-btn"
+                disabled={!canUndo(state.history)}
+                onclick={handleUndo}
+                title={$_('toolbar.undo')}
+        >
+          <Undo2 size={20} />
+        </button>
+
+        <button
+                class="editor-history-btn"
+                disabled={!canRedo(state.history)}
+                onclick={handleRedo}
+                title={$_('toolbar.redo')}
+        >
+          <Redo2 size={20} />
+        </button>
+
+        <button
+                class="editor-history-btn"
+                disabled={!!state.imageData.original}
+                onclick={handleReset}
+                title={$_('editor.reset')}
+        >
+          <RotateCcw size={20} />
+        </button>
+      </div>
     </div>
   {/if}
 
@@ -458,11 +489,13 @@
           const delta = -e.deltaY * 0.001;
           handleZoom(delta, e.clientX, e.clientY);
         }}
+        bind:clientWidth
+        bind:clientHeight
       >
         <Canvas
           bind:canvas={canvasElement}
-          width={width}
-          height={height}
+          width={clientWidth || width}
+          height={clientHeight || height}
           image={state.imageData.original}
           viewport={state.viewport}
           transform={state.transform}
@@ -634,7 +667,8 @@
     overflow: hidden;
 
     @media (max-width: 767px) {
-
+      flex: 1;
+      min-height: 0;
     }
   }
 
@@ -649,6 +683,18 @@
     bottom: 1rem;
     overflow-y: auto;
     scrollbar-width: thin;
+
+    @media (max-width: 767px) {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: auto;
+      bottom: 0;
+      width: auto;
+      max-height: 50vh;
+      border-radius: 16px 16px 0 0;
+      z-index: 1001;
+    }
   }
 
   .no-image-message {
@@ -667,23 +713,35 @@
   }
 
   .embedded-controls {
+    position: relative;
     display: flex;
-    justify-content: flex-end;
+    justify-content: space-between;
     gap: 1rem;
     z-index: 1000;
+
+    @media (max-width: 767px) {
+
+    }
   }
 
   .embedded-btn {
-    padding: .5rem 1rem;
+    padding: 0 1rem;
     border: none;
     font-size: .9rem;
     font-weight: 600;
     cursor: pointer;
     transition: all 0.2s;
     border-radius: 4px;
+    height: 36px;
 
     &:hover {
       opacity: .8;
+    }
+
+    @media (max-width: 767px) {
+      padding: 0;
+      font-size: .75rem;
+      min-width: 80px;
     }
   }
 
@@ -710,5 +768,50 @@
     display: flex;
     align-items: center;
     margin: 0 auto 0 0;
+  }
+
+  .editor-history-controls {
+    position: absolute;
+    right: 0;
+    left: 0;
+    top: 0;
+    margin: auto;
+    width: fit-content;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    border-radius: 8px;
+    border: 1px solid #444;
+    box-sizing: border-box;
+  }
+
+  .editor-history-btn {
+    appearance: none;
+    box-shadow: none;
+    border: none;
+    background: #333;
+    width: 36px;
+    height: 36px;
+    display: grid;
+    place-content: center;
+    color: #fff;
+    cursor: pointer;
+    transition: all .3s ease-in-out;
+    border-right: 1px solid #444;
+
+    &:last-child {
+      border-right: none;
+    }
+
+    &:hover {
+      opacity: .7;
+    }
+
+    &:disabled {
+      background: #222;
+      color: #333;
+      cursor: not-allowed;
+    }
   }
 </style>

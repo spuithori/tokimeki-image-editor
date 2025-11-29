@@ -39,6 +39,16 @@
   let initialPinchDistance = $state(0);
   let initialCropSize = $state<{ width: number; height: number } | null>(null);
 
+  // Helper to get coordinates from mouse or touch event
+  function getEventCoords(event: MouseEvent | TouchEvent): { clientX: number; clientY: number } {
+    if ('touches' in event && event.touches.length > 0) {
+      return { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
+    } else if ('clientX' in event) {
+      return { clientX: event.clientX, clientY: event.clientY };
+    }
+    return { clientX: 0, clientY: 0 };
+  }
+
   // Canvas coordinates for rendering
   let canvasCoords = $derived.by(() => {
     if (!canvas || !image) return null;
@@ -73,13 +83,14 @@
     }
   });
 
-  function handleMouseDown(event: MouseEvent, handle?: string) {
+  function handleMouseDown(event: MouseEvent | TouchEvent, handle?: string) {
     if (!canvas || !image) return;
 
     event.preventDefault();
     event.stopPropagation();
 
-    dragStart = { x: event.clientX, y: event.clientY };
+    const coords = getEventCoords(event);
+    dragStart = { x: coords.clientX, y: coords.clientY };
     initialCropArea = { ...cropArea };
 
     if (handle) {
@@ -90,13 +101,17 @@
     }
   }
 
-  function handleContainerMouseDown(event: MouseEvent) {
-    if (!canvas || !canvasCoords || event.button !== 0) return;
+  function handleContainerMouseDown(event: MouseEvent | TouchEvent) {
+    if (!canvas || !canvasCoords) return;
+
+    // Check if it's a mouse event with non-left button
+    if ('button' in event && event.button !== 0) return;
 
     // Check if click is inside crop area
     const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
+    const coords = getEventCoords(event);
+    const mouseX = coords.clientX - rect.left;
+    const mouseY = coords.clientY - rect.top;
 
     const isInsideCropArea =
       mouseX >= canvasCoords.x &&
@@ -110,16 +125,18 @@
     // If outside crop area, start panning the viewport
     event.preventDefault();
     isPanning = true;
-    lastPanPosition = { x: event.clientX, y: event.clientY };
+    lastPanPosition = { x: coords.clientX, y: coords.clientY };
   }
 
-  function handleMouseMove(event: MouseEvent) {
+  function handleMouseMove(event: MouseEvent | TouchEvent) {
     if (!canvas || !image) return;
+
+    const coords = getEventCoords(event);
 
     // Handle viewport panning (when dragging outside crop area)
     if (isPanning && onViewportChange) {
-      const deltaX = event.clientX - lastPanPosition.x;
-      const deltaY = event.clientY - lastPanPosition.y;
+      const deltaX = coords.clientX - lastPanPosition.x;
+      const deltaY = coords.clientY - lastPanPosition.y;
 
       // Use original image dimensions (same as Canvas.svelte when not cropped)
       const imgWidth = image.width;
@@ -145,7 +162,7 @@
         offsetY: clampedOffsetY
       });
 
-      lastPanPosition = { x: event.clientX, y: event.clientY };
+      lastPanPosition = { x: coords.clientX, y: coords.clientY };
       event.preventDefault();
       return;
     }
@@ -155,8 +172,8 @@
 
     if (!isDragging && !isResizing) return;
 
-    const deltaX = event.clientX - dragStart.x;
-    const deltaY = event.clientY - dragStart.y;
+    const deltaX = coords.clientX - dragStart.x;
+    const deltaY = coords.clientY - dragStart.y;
 
     // Convert delta to image coordinates
     const scale = viewport.scale * viewport.zoom;
@@ -559,6 +576,7 @@
       stroke-dasharray="5,5"
       style="pointer-events: all; cursor: move;"
       onmousedown={(e) => handleMouseDown(e)}
+      ontouchstart={(e) => handleMouseDown(e)}
     />
 
     <!-- Grid lines (rule of thirds) -->
@@ -610,6 +628,7 @@
       stroke-width="2"
       style="pointer-events: all; cursor: nw-resize;"
       onmousedown={(e) => handleMouseDown(e, 'nw')}
+      ontouchstart={(e) => handleMouseDown(e, 'nw')}
     />
     <circle
       cx={canvasCoords.x + canvasCoords.width}
@@ -620,6 +639,7 @@
       stroke-width="2"
       style="pointer-events: all; cursor: ne-resize;"
       onmousedown={(e) => handleMouseDown(e, 'ne')}
+      ontouchstart={(e) => handleMouseDown(e, 'ne')}
     />
     <circle
       cx={canvasCoords.x}
@@ -630,6 +650,7 @@
       stroke-width="2"
       style="pointer-events: all; cursor: sw-resize;"
       onmousedown={(e) => handleMouseDown(e, 'sw')}
+      ontouchstart={(e) => handleMouseDown(e, 'sw')}
     />
     <circle
       cx={canvasCoords.x + canvasCoords.width}
@@ -640,6 +661,7 @@
       stroke-width="2"
       style="pointer-events: all; cursor: se-resize;"
       onmousedown={(e) => handleMouseDown(e, 'se')}
+      ontouchstart={(e) => handleMouseDown(e, 'se')}
     />
 
     <!-- Edges -->
@@ -652,6 +674,7 @@
       stroke-width="2"
       style="pointer-events: all; cursor: n-resize;"
       onmousedown={(e) => handleMouseDown(e, 'n')}
+      ontouchstart={(e) => handleMouseDown(e, 'n')}
     />
     <circle
       cx={canvasCoords.x + canvasCoords.width}
@@ -662,6 +685,7 @@
       stroke-width="2"
       style="pointer-events: all; cursor: e-resize;"
       onmousedown={(e) => handleMouseDown(e, 'e')}
+      ontouchstart={(e) => handleMouseDown(e, 'e')}
     />
     <circle
       cx={canvasCoords.x + canvasCoords.width / 2}
@@ -672,6 +696,7 @@
       stroke-width="2"
       style="pointer-events: all; cursor: s-resize;"
       onmousedown={(e) => handleMouseDown(e, 's')}
+      ontouchstart={(e) => handleMouseDown(e, 's')}
     />
     <circle
       cx={canvasCoords.x}
@@ -682,6 +707,7 @@
       stroke-width="2"
       style="pointer-events: all; cursor: w-resize;"
       onmousedown={(e) => handleMouseDown(e, 'w')}
+      ontouchstart={(e) => handleMouseDown(e, 'w')}
     />
   </svg>
 
@@ -775,6 +801,12 @@
     flex-direction: column;
     gap: 0.75rem;
     z-index: 20;
+
+    @media (max-width: 767px) {
+      top: 0.5rem;
+      gap: 0.5rem;
+      max-width: 90vw;
+    }
   }
 
   .aspect-ratio-controls {
@@ -786,6 +818,11 @@
     background: rgba(0, 0, 0, 0.8);
     border-radius: 4px;
     width: fit-content;
+
+    @media (max-width: 767px) {
+      padding: 0.4rem 0.6rem;
+      gap: 0.3rem;
+    }
   }
 
   .transform-controls {
@@ -794,6 +831,11 @@
     padding: 0.5rem 1rem;
     background: rgba(0, 0, 0, 0.8);
     border-radius: 4px;
+
+    @media (max-width: 767px) {
+      gap: 0.5rem;
+      padding: 0.4rem 0.6rem;
+    }
   }
 
   .control-group {
@@ -806,11 +848,20 @@
     font-size: 0.85rem;
     color: #ccc;
     margin-right: 0.25rem;
+
+    @media (max-width: 767px) {
+      font-size: 0.7rem;
+      display: none;
+    }
   }
 
   .button-group {
     display: flex;
     gap: 0.25rem;
+
+    @media (max-width: 767px) {
+      gap: 0.2rem;
+    }
   }
 
   .aspect-btn {
@@ -822,6 +873,11 @@
     cursor: pointer;
     font-size: 0.85rem;
     transition: all 0.2s;
+
+    @media (max-width: 767px) {
+      padding: 0.3rem 0.6rem;
+      font-size: 0.75rem;
+    }
   }
 
   .aspect-btn:hover {
@@ -841,6 +897,10 @@
     display: flex;
     align-items: center;
     justify-content: center;
+
+    @media (max-width: 767px) {
+      padding: 0.3rem 0.5rem;
+    }
   }
 
   .transform-btn:hover {
@@ -861,6 +921,15 @@
     display: flex;
     gap: 0.5rem;
     z-index: 20;
+
+    @media (max-width: 767px) {
+      bottom: 0.5rem;
+      left: 1rem;
+      right: 1rem;
+      transform: none;
+      width: calc(100% - 2rem);
+      justify-content: stretch;
+    }
   }
 
   .btn {
@@ -870,6 +939,12 @@
     cursor: pointer;
     font-size: 0.9rem;
     transition: all 0.2s;
+
+    @media (max-width: 767px) {
+      flex: 1;
+      padding: 0.75rem 1rem;
+      font-size: 1rem;
+    }
   }
 
   .btn-primary {

@@ -1,61 +1,24 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { Crop, RotateCw, Download, RotateCcw, Undo2, Redo2, SlidersHorizontal, Sparkles, Droplet, Sticker } from 'lucide-svelte';
+  import { Crop, Download, SlidersHorizontal, Sparkles, Droplet, Sticker } from 'lucide-svelte';
   import type { EditorMode } from '../types';
 
   interface Props {
     mode: EditorMode;
     hasImage: boolean;
-    canUndo?: boolean;
-    canRedo?: boolean;
     isStandalone?: boolean;
     onModeChange: (mode: EditorMode) => void;
-    onReset: () => void;
-    onUndo?: () => void;
-    onRedo?: () => void;
   }
 
   let {
     mode,
     hasImage,
-    canUndo = false,
-    canRedo = false,
     isStandalone = false,
     onModeChange,
-    onReset,
-    onUndo,
-    onRedo
   }: Props = $props();
 </script>
 
 <div class="toolbar">
-  <button
-    class="toolbar-btn"
-    disabled={!canUndo}
-    onclick={onUndo}
-    title={$_('toolbar.undo')}
-  >
-    <Undo2 size={20} />
-  </button>
-
-  <button
-    class="toolbar-btn"
-    disabled={!canRedo}
-    onclick={onRedo}
-    title={$_('toolbar.redo')}
-  >
-    <Redo2 size={20} />
-  </button>
-
-  <button
-    class="toolbar-btn toolbar-btn--mr"
-    disabled={!hasImage}
-    onclick={onReset}
-    title={$_('editor.reset')}
-  >
-    <RotateCcw size={20} />
-  </button>
-
   <button
     class="toolbar-btn"
     class:active={mode === 'crop'}
@@ -130,6 +93,7 @@
     display: flex;
     gap: .5rem;
     align-items: center;
+    justify-content: center;
     overflow-x: auto;
 
     @media (max-width: 767px) {
@@ -156,10 +120,6 @@
       font-size: .6rem;
       gap: .3rem;
       width: 64px;
-    }
-
-    &--mr {
-      margin-right: auto;
     }
   }
 

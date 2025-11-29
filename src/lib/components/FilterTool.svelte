@@ -204,6 +204,9 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    position: sticky;
+    top: 0;
+    z-index: 1;
   }
 
   .tool-header h3 {
@@ -234,9 +237,12 @@
     display: grid;
     grid-template-columns: repeat(2, 120px);
     gap: 1rem;
-    overflow-y: auto;
-    scrollbar-width: thin;
     padding-bottom: 1rem;
+
+    @media (max-width: 767px) {
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0.5rem;
+    }
   }
 
   .filter-card {
@@ -250,6 +256,10 @@
     transition: all 0.2s;
     overflow: hidden;
     flex: 0 0 auto;
+
+    @media (max-width: 767px) {
+      border-width: 1px;
+    }
   }
 
   .filter-card:hover {
@@ -268,6 +278,12 @@
     align-items: center;
     justify-content: center;
     overflow: hidden;
+
+    @media (max-width: 767px) {
+      width: 100%;
+      height: 0;
+      padding-bottom: 100%;
+    }
   }
 
   .preview-image {
@@ -275,6 +291,12 @@
     height: 100%;
     object-fit: cover;
     display: block;
+
+    @media (max-width: 767px) {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
   }
 
   .filter-name-loading {
@@ -287,6 +309,15 @@
     color: #fff;
     text-align: center;
     padding: 1rem;
+
+    @media (max-width: 767px) {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 0.5rem;
+      font-size: 0.75rem;
+    }
   }
 
   .filter-name-overlay {
@@ -301,6 +332,11 @@
     font-weight: 600;
     text-align: center;
     pointer-events: none;
+
+    @media (max-width: 767px) {
+      font-size: 0.65rem;
+      padding: 0.3rem 0.2rem 0.2rem;
+    }
   }
 
   .loading-message {

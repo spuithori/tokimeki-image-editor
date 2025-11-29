@@ -35,11 +35,27 @@
   let isPanning = $state(false);
   let lastPanPosition = $state({ x: 0, y: 0 });
   let imageLoadCounter = $state(0); // Trigger redraw when images load
+  let initialPinchDistance = $state(0);
+  let initialZoom = $state(1);
 
   onMount(() => {
     if (canvasElement) {
       canvas = canvasElement;
+
+      // Add touch event listeners with passive: false to allow preventDefault
+      canvasElement.addEventListener('touchstart', handleTouchStart, { passive: false });
+      canvasElement.addEventListener('touchmove', handleTouchMove, { passive: false });
+      canvasElement.addEventListener('touchend', handleTouchEnd, { passive: false });
     }
+
+    return () => {
+      // Cleanup event listeners
+      if (canvasElement) {
+        canvasElement.removeEventListener('touchstart', handleTouchStart);
+        canvasElement.removeEventListener('touchmove', handleTouchMove);
+        canvasElement.removeEventListener('touchend', handleTouchEnd);
+      }
+    };
   });
 
   // Preload stamp images
@@ -110,17 +126,49 @@
   }
 
   function handleTouchStart(e: TouchEvent) {
-    if (e.touches.length === 2) {
-      // Pinch zoom
+    if (e.touches.length === 1) {
+      // Single finger panning
+      isPanning = true;
+      lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      e.preventDefault();
+    } else if (e.touches.length === 2) {
+      // Pinch zoom - stop panning
+      isPanning = false;
       e.preventDefault();
     }
   }
 
-  let initialPinchDistance = $state(0);
-  let initialZoom = $state(1);
-
   function handleTouchMove(e: TouchEvent) {
-    if (e.touches.length === 2) {
+    if (e.touches.length === 1 && isPanning && image && canvasElement) {
+      // Single finger panning
+      e.preventDefault();
+
+      const touch = e.touches[0];
+      const deltaX = touch.clientX - lastPanPosition.x;
+      const deltaY = touch.clientY - lastPanPosition.y;
+
+      // Calculate actual image dimensions after crop and scale
+      const imgWidth = cropArea ? cropArea.width : image.width;
+      const imgHeight = cropArea ? cropArea.height : image.height;
+      const totalScale = viewport.scale * viewport.zoom;
+      const scaledWidth = imgWidth * totalScale;
+      const scaledHeight = imgHeight * totalScale;
+
+      // Allow 20% overflow outside canvas
+      const overflowMargin = 0.2;
+      const maxOffsetX = (scaledWidth / 2) - (canvasElement.width / 2) + (canvasElement.width * overflowMargin);
+      const maxOffsetY = (scaledHeight / 2) - (canvasElement.height / 2) + (canvasElement.height * overflowMargin);
+
+      // Apply limits
+      const newOffsetX = viewport.offsetX + deltaX;
+      const newOffsetY = viewport.offsetY + deltaY;
+
+      viewport.offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
+      viewport.offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+
+      lastPanPosition = { x: touch.clientX, y: touch.clientY };
+    } else if (e.touches.length === 2) {
+      // Pinch zoom
       e.preventDefault();
 
       const touch1 = e.touches[0];
@@ -149,8 +197,16 @@
     }
   }
 
-  function handleTouchEnd() {
-    initialPinchDistance = 0;
+  function handleTouchEnd(e: TouchEvent) {
+    if (e.touches.length === 0) {
+      isPanning = false;
+      initialPinchDistance = 0;
+    } else if (e.touches.length === 1) {
+      // Switched from pinch to pan
+      initialPinchDistance = 0;
+      isPanning = true;
+      lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    }
   }
 </script>
 
@@ -165,9 +221,6 @@
   class:panning={isPanning}
   style="max-width: 100%; max-height: {height}px;"
   onmousedown={handleMouseDown}
-  ontouchstart={handleTouchStart}
-  ontouchmove={handleTouchMove}
-  ontouchend={handleTouchEnd}
 ></canvas>
 
 <style lang="postcss">
@@ -175,6 +228,9 @@
     display: block;
     background: #000;
     cursor: grab;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
   }
 
   .editor-canvas.panning {
