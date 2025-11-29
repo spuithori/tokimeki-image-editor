@@ -20,9 +20,14 @@
     const value = parseFloat((event.target as HTMLInputElement).value);
     onChange({ quality: value });
   }
+
+  // Prevent wheel events from propagating to canvas zoom handler
+  function handleWheel(e: WheelEvent) {
+    e.stopPropagation();
+  }
 </script>
 
-<div class="export-tool">
+<div class="export-tool" onwheel={handleWheel}>
   <div class="tool-header">
     <h3>{$_('editor.export')}</h3>
     <button class="close-btn" onclick={onClose}>✕</button>

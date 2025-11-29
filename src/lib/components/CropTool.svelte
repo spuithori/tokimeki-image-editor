@@ -526,6 +526,13 @@
 
   // Unified touch handlers that delegate based on finger count
   function handleContainerTouchStartUnified(event: TouchEvent) {
+    // Check if touch is on a button or interactive element
+    const target = event.target as HTMLElement;
+    if (target.closest('button') || target.closest('.crop-top-controls') || target.closest('.crop-controls')) {
+      // Let the button handle the event
+      return;
+    }
+
     // Two fingers = pinch zoom crop area
     if (event.touches.length === 2) {
       handlePinchZoomStart(event);
@@ -861,6 +868,7 @@
     flex-direction: column;
     gap: 0.75rem;
     z-index: 20;
+    pointer-events: auto;
 
     @media (max-width: 767px) {
       top: 0.5rem;
@@ -981,6 +989,7 @@
     display: flex;
     gap: 0.5rem;
     z-index: 20;
+    pointer-events: auto;
 
     @media (max-width: 767px) {
       bottom: 0.5rem;

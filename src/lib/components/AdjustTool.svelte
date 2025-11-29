@@ -29,9 +29,14 @@
       grayscale: 0
     });
   }
+
+  // Prevent wheel events from propagating to canvas zoom handler
+  function handleWheel(e: WheelEvent) {
+    e.stopPropagation();
+  }
 </script>
 
-<div class="adjust-tool">
+<div class="adjust-tool" onwheel={handleWheel}>
   <div class="tool-header">
     <h3>{$_('editor.adjust')}</h3>
     <button class="close-btn" onclick={onClose} title={$_('editor.close')}>
