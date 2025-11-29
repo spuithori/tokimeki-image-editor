@@ -1,4 +1,4 @@
-# Tokimeki Image Editor
+# TOKIMEKI Image Editor
 
 ![screenshot-1.png](/static/screenshot-1.png)
 
