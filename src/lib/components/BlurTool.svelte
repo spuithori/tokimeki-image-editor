@@ -550,7 +550,7 @@
   }
 
   .control-group .value {
-    color: #6496ff;
+    color: var(--primary-color, #63b97b);
     font-weight: 600;
   }
 
@@ -567,21 +567,21 @@
     appearance: none;
     width: 16px;
     height: 16px;
-    background: #6496ff;
+    background: var(--primary-color, #63b97b);
     border-radius: 50%;
     cursor: pointer;
     transition: all 0.2s;
   }
 
   .control-group input[type='range']::-webkit-slider-thumb:hover {
-    background: #7aa7ff;
+    background: var(--primary-color, #63b97b);
     transform: scale(1.1);
   }
 
   .control-group input[type='range']::-moz-range-thumb {
     width: 16px;
     height: 16px;
-    background: #6496ff;
+    background: var(--primary-color, #63b97b);
     border: none;
     border-radius: 50%;
     cursor: pointer;
@@ -589,7 +589,7 @@
   }
 
   .control-group input[type='range']::-moz-range-thumb:hover {
-    background: #7aa7ff;
+    background: var(--primary-color, #63b97b);
     transform: scale(1.1);
   }
 

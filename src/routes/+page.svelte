@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { _ } from 'svelte-i18n';
   import { ImageEditor } from '$lib';
 
   function handleExport(dataUrl: string) {
@@ -21,6 +20,7 @@
       <ImageEditor
         width={1000}
         height={600}
+        isStandalone={true}
         onExport={handleExport}
       />
     </div>

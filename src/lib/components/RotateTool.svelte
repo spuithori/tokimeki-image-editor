@@ -160,8 +160,8 @@
   }
 
   .tool-btn.active {
-    background: #0066cc;
-    border-color: #0077dd;
+    background: var(--primary-color, #63b97b);
+    border-color: var(--primary-color, #63b97b);
   }
 
   .rotation-info {

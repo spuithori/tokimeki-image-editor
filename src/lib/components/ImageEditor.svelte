@@ -17,6 +17,9 @@
     initialImage?: File | string;
     width?: number;
     height?: number;
+    isStandalone?: boolean;
+    onComplete?: (dataUrl: string, blob: Blob) => void;
+    onCancel?: () => void;
     onExport?: (dataUrl: string) => void;
   }
 
@@ -24,6 +27,9 @@
     initialImage,
     width = 800,
     height = 600,
+    isStandalone = false,
+    onComplete,
+    onCancel,
     onExport
   }: Props = $props();
 
@@ -62,6 +68,56 @@
   let fileInput = $state<HTMLInputElement | null>(null);
   let adjustmentThrottleTimer: number | null = null;
   let pendingAdjustments: Partial<AdjustmentsState> | null = null;
+  let lastInitialImage = $state<File | string | undefined>(undefined);
+
+  // Load initial image when provided
+  $effect(() => {
+    if (initialImage && initialImage !== lastInitialImage) {
+      lastInitialImage = initialImage;
+
+      if (typeof initialImage === 'string') {
+        // URL or Data URL
+        const img = new Image();
+        img.onload = () => {
+          state.imageData.original = img;
+          state.imageData.current = img;
+          state.imageData.width = img.width;
+          state.imageData.height = img.height;
+
+          // Calculate fit scale
+          const fitScale = calculateFitScale(img.width, img.height, width, height);
+
+          // Reset state
+          state.cropArea = null;
+          state.transform = {
+            rotation: 0,
+            flipHorizontal: false,
+            flipVertical: false,
+            scale: 1
+          };
+          state.viewport = {
+            zoom: 1,
+            offsetX: 0,
+            offsetY: 0,
+            scale: fitScale
+          };
+          state.blurAreas = [];
+          state.stampAreas = [];
+
+          // Reset history and save initial state
+          state.history = createEmptyHistory();
+          saveToHistory();
+        };
+        img.onerror = (error) => {
+          console.error('Failed to load initial image:', error);
+        };
+        img.src = initialImage;
+      } else {
+        // File object
+        handleFileUpload(initialImage);
+      }
+    }
+  });
 
   async function handleFileUpload(file: File) {
     try {
@@ -214,6 +270,37 @@
     }
   }
 
+  function handleComplete() {
+    if (!state.imageData.original || !onComplete) return;
+
+    const exportCanvas = applyTransform(
+      state.imageData.original,
+      state.transform,
+      state.adjustments,
+      state.cropArea,
+      state.blurAreas,
+      state.stampAreas
+    );
+
+    const dataUrl = exportCanvas.toDataURL(
+      state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png',
+      state.exportOptions.quality
+    );
+
+    // Convert to blob
+    exportCanvas.toBlob((blob) => {
+      if (blob) {
+        onComplete(dataUrl, blob);
+      }
+    }, state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png', state.exportOptions.quality);
+  }
+
+  function handleCancel() {
+    if (onCancel) {
+      onCancel();
+    }
+  }
+
   function handleReset() {
     if (!state.imageData.original) return;
 
@@ -326,8 +413,21 @@
 <svelte:window onkeydown={handleKeyDown} />
 
 <div class="image-editor" style="width: {width}px;">
+  {#if !isStandalone && state.imageData.original}
+    <div class="embedded-controls">
+      <p class="experimental">BETA</p>
+
+      <button class="embedded-btn embedded-btn-cancel" onclick={handleCancel}>
+        {$_('editor.cancel')}
+      </button>
+      <button class="embedded-btn embedded-btn-apply" onclick={handleComplete}>
+        {$_('editor.apply')}
+      </button>
+    </div>
+  {/if}
+
   <div class="editor-body">
-    {#if !state.imageData.original}
+    {#if !state.imageData.original && isStandalone}
       <div
         class="upload-area"
         role="button"
@@ -345,6 +445,10 @@
           onchange={handleFileInputChange}
           style="display: none;"
         />
+      </div>
+    {:else if !state.imageData.original && !isStandalone}
+      <div class="no-image-message">
+        <p>{$_('editor.noImage')}</p>
       </div>
     {:else}
       <div
@@ -417,12 +521,15 @@
         {:else if state.mode === 'filter'}
           <div class="tools-panel">
             <FilterTool
+              image={state.imageData.original}
               adjustments={state.adjustments}
+              transform={state.transform}
+              cropArea={state.cropArea}
               onChange={handleFilterApply}
               onClose={() => state.mode = null}
             />
           </div>
-        {:else if state.mode === 'export'}
+        {:else if state.mode === 'export' && isStandalone}
           <div class="tools-panel">
             <ExportTool
               options={state.exportOptions}
@@ -442,6 +549,7 @@
       hasImage={!!state.imageData.original}
       canUndo={canUndo(state.history)}
       canRedo={canRedo(state.history)}
+      isStandalone={isStandalone}
       onModeChange={handleModeChange}
       onReset={handleReset}
       onUndo={handleUndo}
@@ -451,6 +559,12 @@
 </div>
 
 <style lang="postcss">
+  :global {
+    input[type='range'] {
+      appearance: none;
+    }
+  }
+
   .image-editor {
     display: flex;
     flex-direction: column;
@@ -459,6 +573,11 @@
     background: #1a1a1a;
     border-radius: 8px;
     color: #fff;
+
+    @media (max-width: 767px) {
+      width: 100% !important;
+      height: 90vh;
+    }
   }
 
   .editor-header {
@@ -471,6 +590,11 @@
     display: flex;
     flex-direction: column;
     gap: 1rem;
+
+    @media (max-width: 767px) {
+      flex: 1;
+      justify-content: center;
+    }
   }
 
   .upload-area {
@@ -494,6 +618,10 @@
     margin: 0;
     font-size: 1.1rem;
     color: #999;
+
+    @media (max-width: 767px) {
+      font-size: .75rem;
+    }
   }
 
   .canvas-container {
@@ -504,6 +632,10 @@
     background: #2a2a2a;
     border-radius: 8px;
     overflow: hidden;
+
+    @media (max-width: 767px) {
+
+    }
   }
 
   .tools-panel {
@@ -515,5 +647,68 @@
     right: 1rem;
     top: 1rem;
     bottom: 1rem;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .no-image-message {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 400px;
+    background: #2a2a2a;
+    border-radius: 8px;
+  }
+
+  .no-image-message p {
+    margin: 0;
+    font-size: 1.1rem;
+    color: #999;
+  }
+
+  .embedded-controls {
+    display: flex;
+    justify-content: flex-end;
+    gap: 1rem;
+    z-index: 1000;
+  }
+
+  .embedded-btn {
+    padding: .5rem 1rem;
+    border: none;
+    font-size: .9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    border-radius: 4px;
+
+    &:hover {
+      opacity: .8;
+    }
+  }
+
+  .embedded-btn-cancel {
+    background: #666;
+    color: #fff;
+  }
+
+  .embedded-btn-apply {
+    background: var(--primary-color, #63b97b);
+    color: #fff;
+  }
+
+  .experimental {
+    padding: 0 1rem;
+    background: var(--primary-color, #63b97b);
+    opacity: .7;
+    color: #fff;
+    height: 40px;
+    border-radius: 20px;
+    letter-spacing: .05em;
+    font-size: 16px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    margin: 0 auto 0 0;
   }
 </style>

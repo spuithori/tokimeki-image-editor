@@ -20,7 +20,7 @@ export const STAMP_ASSETS: StampAsset[] = [
   { id: 'emoji-flower', type: 'emoji', content: '🌸', preview: '🌸' },
   { id: 'emoji-cherry', type: 'emoji', content: '🍒', preview: '🍒' },
 
-  { id: 'image-1', type: 'image', content: '/stamps/christmas_tree.png', preview: '/stamps/christmas_tree.png' },
+  // { id: 'image-1', type: 'image', content: '/stamps/christmas_tree.png', preview: '/stamps/christmas_tree.png' },
 
-  { id: 'svg-1', type: 'svg', content: '/stamps/svg-1.svg', preview: '/stamps/svg-1.svg' }
+  // { id: 'svg-1', type: 'svg', content: '/stamps/svg-1.svg', preview: '/stamps/svg-1.svg' }
 ];

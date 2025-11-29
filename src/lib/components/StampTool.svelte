@@ -470,7 +470,7 @@
               width={canvasStamp.canvasWidth}
               height={canvasStamp.canvasHeight}
               fill="none"
-              stroke={isSelected ? '#0066cc' : '#ffffff'}
+              stroke={isSelected ? 'var(--primary-color, #63b97b)' : '#ffffff'}
               stroke-width="2"
               stroke-dasharray={isSelected ? '0' : '5,5'}
             />
@@ -485,7 +485,7 @@
                 cx={handle.x}
                 cy={handle.y}
                 r="6"
-                fill="#0066cc"
+                fill="var(--primary-color, #63b97b)"
                 stroke="#fff"
                 stroke-width="2"
                 style="pointer-events: all; cursor: {cursor};"
@@ -586,8 +586,8 @@
   }
 
   .stamp-item.selected {
-    background: #0066cc;
-    border-color: #0077dd;
+    background: var(--primary-color, #63b97b);
+    border-color: var(--primary-color, #63b97b);
   }
 
   .stamp-item .emoji {

@@ -151,8 +151,8 @@
   }
 
   .format-btn.active {
-    background: #0066cc;
-    border-color: #0077dd;
+    background: var(--primary-color, #63b97b);
+    border-color: var(--primary-color, #63b97b);
   }
 
   .quality-slider {
@@ -169,7 +169,7 @@
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background: #0066cc;
+    background: var(--primary-color, #63b97b);
     cursor: pointer;
   }
 
@@ -177,7 +177,7 @@
     width: 16px;
     height: 16px;
     border-radius: 50%;
-    background: #0066cc;
+    background: var(--primary-color, #63b97b);
     cursor: pointer;
     border: none;
   }
@@ -188,7 +188,7 @@
     justify-content: center;
     gap: 0.5rem;
     padding: 0.75rem 1.5rem;
-    background: #0066cc;
+    background: var(--primary-color, #63b97b);
     color: #fff;
     border: none;
     border-radius: 4px;
@@ -199,6 +199,6 @@
   }
 
   .export-btn:hover {
-    background: #0077dd;
+    background: var(--primary-color, #63b97b);
   }
 </style>

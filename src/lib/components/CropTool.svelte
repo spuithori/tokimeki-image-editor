@@ -554,7 +554,7 @@
       width={canvasCoords.width}
       height={canvasCoords.height}
       fill="none"
-      stroke="#0066cc"
+      stroke="var(--primary-color, #63b97b)"
       stroke-width="2"
       stroke-dasharray="5,5"
       style="pointer-events: all; cursor: move;"
@@ -605,7 +605,7 @@
       cx={canvasCoords.x}
       cy={canvasCoords.y}
       r="6"
-      fill="#0066cc"
+      fill="var(--primary-color, #63b97b)"
       stroke="white"
       stroke-width="2"
       style="pointer-events: all; cursor: nw-resize;"
@@ -615,7 +615,7 @@
       cx={canvasCoords.x + canvasCoords.width}
       cy={canvasCoords.y}
       r="6"
-      fill="#0066cc"
+      fill="var(--primary-color, #63b97b)"
       stroke="white"
       stroke-width="2"
       style="pointer-events: all; cursor: ne-resize;"
@@ -625,7 +625,7 @@
       cx={canvasCoords.x}
       cy={canvasCoords.y + canvasCoords.height}
       r="6"
-      fill="#0066cc"
+      fill="var(--primary-color, #63b97b)"
       stroke="white"
       stroke-width="2"
       style="pointer-events: all; cursor: sw-resize;"
@@ -635,7 +635,7 @@
       cx={canvasCoords.x + canvasCoords.width}
       cy={canvasCoords.y + canvasCoords.height}
       r="6"
-      fill="#0066cc"
+      fill="var(--primary-color, #63b97b)"
       stroke="white"
       stroke-width="2"
       style="pointer-events: all; cursor: se-resize;"
@@ -647,7 +647,7 @@
       cx={canvasCoords.x + canvasCoords.width / 2}
       cy={canvasCoords.y}
       r="6"
-      fill="#0066cc"
+      fill="var(--primary-color, #63b97b)"
       stroke="white"
       stroke-width="2"
       style="pointer-events: all; cursor: n-resize;"
@@ -657,7 +657,7 @@
       cx={canvasCoords.x + canvasCoords.width}
       cy={canvasCoords.y + canvasCoords.height / 2}
       r="6"
-      fill="#0066cc"
+      fill="var(--primary-color, #63b97b)"
       stroke="white"
       stroke-width="2"
       style="pointer-events: all; cursor: e-resize;"
@@ -667,7 +667,7 @@
       cx={canvasCoords.x + canvasCoords.width / 2}
       cy={canvasCoords.y + canvasCoords.height}
       r="6"
-      fill="#0066cc"
+      fill="var(--primary-color, #63b97b)"
       stroke="white"
       stroke-width="2"
       style="pointer-events: all; cursor: s-resize;"
@@ -677,7 +677,7 @@
       cx={canvasCoords.x}
       cy={canvasCoords.y + canvasCoords.height / 2}
       r="6"
-      fill="#0066cc"
+      fill="var(--primary-color, #63b97b)"
       stroke="white"
       stroke-width="2"
       style="pointer-events: all; cursor: w-resize;"
@@ -825,8 +825,8 @@
   }
 
   .aspect-btn:hover {
-    background: #0066cc;
-    border-color: #0077dd;
+    background: var(--primary-color, #63b97b);
+    border-color: var(--primary-color, #63b97b);
   }
 
   .transform-btn {
@@ -849,8 +849,8 @@
   }
 
   .transform-btn.active {
-    background: #0066cc;
-    border-color: #0077dd;
+    background: var(--primary-color, #63b97b);
+    border-color: var(--primary-color, #63b97b);
   }
 
   .crop-controls {
@@ -873,12 +873,12 @@
   }
 
   .btn-primary {
-    background: #0066cc;
+    background: var(--primary-color, #63b97b);
     color: #fff;
   }
 
   .btn-primary:hover {
-    background: #0077dd;
+    background: var(--primary-color, #63b97b);
   }
 
   .btn-secondary {

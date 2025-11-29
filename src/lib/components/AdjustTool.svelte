@@ -234,7 +234,7 @@
   }
 
   .adjustment-control .value {
-    color: #0066cc;
+    color: var(--primary-color, #63b97b);
     font-weight: 600;
     min-width: 3rem;
     text-align: right;
@@ -253,21 +253,21 @@
     appearance: none;
     width: 16px;
     height: 16px;
-    background: #0066cc;
+    background: var(--primary-color, #63b97b);
     border-radius: 50%;
     cursor: pointer;
     transition: all 0.2s;
   }
 
   .adjustment-control input[type='range']::-webkit-slider-thumb:hover {
-    background: #0077dd;
+    background: var(--primary-color, #63b97b);
     transform: scale(1.1);
   }
 
   .adjustment-control input[type='range']::-moz-range-thumb {
     width: 16px;
     height: 16px;
-    background: #0066cc;
+    background: var(--primary-color, #63b97b);
     border: none;
     border-radius: 50%;
     cursor: pointer;
@@ -275,7 +275,7 @@
   }
 
   .adjustment-control input[type='range']::-moz-range-thumb:hover {
-    background: #0077dd;
+    background: var(--primary-color, #63b97b);
     transform: scale(1.1);
   }
 

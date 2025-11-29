@@ -8,6 +8,7 @@
     hasImage: boolean;
     canUndo?: boolean;
     canRedo?: boolean;
+    isStandalone?: boolean;
     onModeChange: (mode: EditorMode) => void;
     onReset: () => void;
     onUndo?: () => void;
@@ -19,6 +20,7 @@
     hasImage,
     canUndo = false,
     canRedo = false,
+    isStandalone = false,
     onModeChange,
     onReset,
     onUndo,
@@ -109,15 +111,17 @@
     <span>{$_('editor.stamp')}</span>
   </button>
 
-  <button
-    class="toolbar-btn"
-    class:active={mode === 'export'}
-    disabled={!hasImage}
-    onclick={() => onModeChange('export')}
-    title={$_('toolbar.export')}
-  >
-    <Download size={20} />
-  </button>
+  {#if isStandalone}
+    <button
+      class="toolbar-btn"
+      class:active={mode === 'export'}
+      disabled={!hasImage}
+      onclick={() => onModeChange('export')}
+      title={$_('toolbar.export')}
+    >
+      <Download size={20} />
+    </button>
+  {/if}
 </div>
 
 <style lang="postcss">
@@ -126,6 +130,11 @@
     display: flex;
     gap: .5rem;
     align-items: center;
+    overflow-x: auto;
+
+    @media (max-width: 767px) {
+      align-items: stretch;
+    }
   }
 
   .toolbar-btn {
@@ -141,19 +150,30 @@
     transition: all 0.2s;
     font-size: 0.9rem;
 
+    @media (max-width: 767px) {
+      flex-direction: column;
+      justify-content: center;
+      font-size: .6rem;
+      gap: .3rem;
+      width: 64px;
+    }
+
     &--mr {
       margin-right: auto;
     }
   }
 
   .toolbar-btn:hover:not(:disabled) {
-    background: #444;
-    border-color: #555;
+    opacity: .7;
   }
 
   .toolbar-btn.active {
-    background: #0066cc;
-    border-color: #0077dd;
+    background: var(--primary-color, #63b97b);
+    border-color: var(--primary-color, #63b97b);
+
+    &:hover {
+      opacity: 1;
+    }
   }
 
   .toolbar-btn:disabled {
