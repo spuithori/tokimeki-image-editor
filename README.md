@@ -1,5 +1,7 @@
 # Tokimeki Image Editor
 
+![screenshot-1.png](/static/screenshot-1.png)
+
 A powerful and modern image editing library for Svelte 5.
 
 # Features
