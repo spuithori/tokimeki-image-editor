@@ -19,6 +19,10 @@ https://tokimeki-image-editor.vercel.app/
 
 WIP
 
+# Usage 
+
+WIP
+
 ## License
 
 MIT
