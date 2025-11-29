@@ -19,7 +19,7 @@
     width?: number;
     height?: number;
     isStandalone?: boolean;
-    onComplete?: (dataUrl: string, blob: Blob) => void;
+    onComplete?: (dataUrl: string, blobObj: {blob: Blob, width: number, height: number}) => void;
     onCancel?: () => void;
     onExport?: (dataUrl: string) => void;
   }
@@ -286,6 +286,7 @@
       state.stampAreas
     );
 
+    const format = state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png';
     const dataUrl = exportCanvas.toDataURL(
       state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png',
       state.exportOptions.quality
@@ -294,9 +295,17 @@
     // Convert to blob
     exportCanvas.toBlob((blob) => {
       if (blob) {
-        onComplete(dataUrl, blob);
+        createImageBitmap(blob).then((bitmap) => {
+          onComplete(dataUrl, {
+            blob: blob,
+            width: bitmap.width,
+            height: bitmap.height
+          });
+
+          bitmap.close();
+        });
       }
-    }, state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png', state.exportOptions.quality);
+    }, format, state.exportOptions.quality);
   }
 
   function handleCancel() {

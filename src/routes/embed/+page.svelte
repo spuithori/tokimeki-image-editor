@@ -20,10 +20,8 @@
     }
   }
 
-  function handleComplete(dataUrl: string, blob: Blob) {
-    console.log('Image edited successfully');
-    console.log('Data URL length:', dataUrl.length);
-    console.log('Blob size:', blob.size, 'bytes');
+  function handleComplete(dataUrl: string, blobObj: {blob: Blob, width: number, height: number}) {
+    console.log(blobObj);
     editedImageUrl = dataUrl;
     showEditor = false;
   }

@@ -1,5 +1,6 @@
 // Main component
-export { default as ImageEditor } from './components/ImageEditor.svelte';
+import ImageEditor from './components/ImageEditor.svelte';
+export { ImageEditor };
 
 // Types
 export type {
