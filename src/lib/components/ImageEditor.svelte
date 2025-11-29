@@ -1,4 +1,5 @@
 <script lang="ts">
+  import '$lib/i18n';
   import { _ } from 'svelte-i18n';
   import { Redo2, RotateCcw, Undo2 } from 'lucide-svelte';
   import type { EditorMode, EditorState, CropArea, TransformState, Viewport, AdjustmentsState, BlurArea } from '../types';
