@@ -52,14 +52,14 @@
 </script>
 
 <svelte:head>
-  <title>Embedded Mode Test - Tokimeki Image Editor</title>
+  <title>Embedded Mode Test - TOKIMEKI Image Editor</title>
 </svelte:head>
 
 {#if !showEditor}
   <main>
     <div class="container">
       <header>
-        <h1>Tokimeki Image Editor (Embed)</h1>
+        <h1>TOKIMEKI Image Editor (Embed)</h1>
       </header>
 
       <div class="content">

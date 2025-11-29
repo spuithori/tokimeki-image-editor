@@ -7,13 +7,13 @@
 </script>
 
 <svelte:head>
-  <title>Tokimeki Image Editor - Demo</title>
+  <title>TOKIMEKI Image Editor - Demo</title>
 </svelte:head>
 
 <main>
   <div class="container">
     <header>
-      <h1>Tokimeki Image Editor</h1>
+      <h1>TOKIMEKI Image Editor</h1>
     </header>
 
     <div class="demo-section">
