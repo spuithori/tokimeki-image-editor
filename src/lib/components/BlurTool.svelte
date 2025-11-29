@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
   import type { BlurArea, Viewport, TransformState, CropArea } from '../types';
   import { screenToImageCoords, imageToCanvasCoords } from '../utils/canvas';
@@ -17,6 +18,35 @@
   }
 
   let { canvas, image, viewport, transform, blurAreas, cropArea, onUpdate, onClose, onViewportChange }: Props = $props();
+
+  let containerElement = $state<HTMLDivElement | null>(null);
+
+  // Helper to get coordinates from mouse or touch event
+  function getEventCoords(event: MouseEvent | TouchEvent): { clientX: number; clientY: number } {
+    if ('touches' in event && event.touches.length > 0) {
+      return { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
+    } else if ('clientX' in event) {
+      return { clientX: event.clientX, clientY: event.clientY };
+    }
+    return { clientX: 0, clientY: 0 };
+  }
+
+  onMount(() => {
+    if (containerElement) {
+      // Add touch event listeners with passive: false to allow preventDefault
+      containerElement.addEventListener('touchstart', handleContainerTouchStart as any, { passive: false });
+      containerElement.addEventListener('touchmove', handleTouchMove as any, { passive: false });
+      containerElement.addEventListener('touchend', handleTouchEnd as any, { passive: false });
+    }
+
+    return () => {
+      if (containerElement) {
+        containerElement.removeEventListener('touchstart', handleContainerTouchStart as any);
+        containerElement.removeEventListener('touchmove', handleTouchMove as any);
+        containerElement.removeEventListener('touchend', handleTouchEnd as any);
+      }
+    };
+  });
 
   // States for creating new blur area
   let isCreating = $state(false);
@@ -82,12 +112,16 @@
     return { x, y, width, height };
   });
 
-  function handleContainerMouseDown(event: MouseEvent) {
-    if (!canvas || !image || event.button !== 0) return;
+  function handleContainerMouseDown(event: MouseEvent | TouchEvent) {
+    if (!canvas || !image) return;
 
+    // Check if it's a mouse event with non-left button
+    if ('button' in event && event.button !== 0) return;
+
+    const coords = getEventCoords(event);
     const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
+    const mouseX = coords.clientX - rect.left;
+    const mouseY = coords.clientY - rect.top;
 
     // Check if clicking on an existing blur area
     for (let i = canvasBlurAreas.length - 1; i >= 0; i--) {
@@ -111,17 +145,18 @@
     event.preventDefault();
   }
 
-  function handleMouseMove(event: MouseEvent) {
+  function handleMouseMove(event: MouseEvent | TouchEvent) {
     if (!canvas || !image) return;
 
+    const coords = getEventCoords(event);
     const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
+    const mouseX = coords.clientX - rect.left;
+    const mouseY = coords.clientY - rect.top;
 
     // Handle viewport panning
     if (isPanning && onViewportChange) {
-      const deltaX = event.clientX - lastPanPosition.x;
-      const deltaY = event.clientY - lastPanPosition.y;
+      const deltaX = coords.clientX - lastPanPosition.x;
+      const deltaY = coords.clientY - lastPanPosition.y;
 
       const imgWidth = image.width;
       const imgHeight = image.height;
@@ -144,7 +179,7 @@
         offsetY: clampedOffsetY
       });
 
-      lastPanPosition = { x: event.clientX, y: event.clientY };
+      lastPanPosition = { x: coords.clientX, y: coords.clientY };
       event.preventDefault();
       return;
     }
@@ -158,8 +193,8 @@
 
     // Handle dragging selected area
     if (isDragging && initialArea && selectedAreaId) {
-      const deltaX = event.clientX - dragStart.x;
-      const deltaY = event.clientY - dragStart.y;
+      const deltaX = coords.clientX - dragStart.x;
+      const deltaY = coords.clientY - dragStart.y;
 
       // Convert delta to image coordinates
       const totalScale = viewport.scale * viewport.zoom;
@@ -182,8 +217,8 @@
 
     // Handle resizing selected area
     if (isResizing && initialArea && resizeHandle && selectedAreaId) {
-      const deltaX = event.clientX - dragStart.x;
-      const deltaY = event.clientY - dragStart.y;
+      const deltaX = coords.clientX - dragStart.x;
+      const deltaY = coords.clientY - dragStart.y;
 
       const totalScale = viewport.scale * viewport.zoom;
       const imgDeltaX = deltaX / totalScale;
@@ -239,7 +274,7 @@
     }
   }
 
-  function handleMouseUp(event: MouseEvent) {
+  function handleMouseUp(event?: MouseEvent | TouchEvent) {
     if (!canvas || !image) return;
 
     // Finish creating new blur area
@@ -294,28 +329,30 @@
     initialArea = null;
   }
 
-  function handleAreaMouseDown(event: MouseEvent, areaId: string) {
+  function handleAreaMouseDown(event: MouseEvent | TouchEvent, areaId: string) {
     if (!canvas || !image) return;
 
     event.preventDefault();
     event.stopPropagation();
 
+    const coords = getEventCoords(event);
     selectedAreaId = areaId;
     isDragging = true;
-    dragStart = { x: event.clientX, y: event.clientY };
+    dragStart = { x: coords.clientX, y: coords.clientY };
     initialArea = blurAreas.find(a => a.id === areaId) || null;
   }
 
-  function handleHandleMouseDown(event: MouseEvent, areaId: string, handle: string) {
+  function handleHandleMouseDown(event: MouseEvent | TouchEvent, areaId: string, handle: string) {
     if (!canvas || !image) return;
 
     event.preventDefault();
     event.stopPropagation();
 
+    const coords = getEventCoords(event);
     selectedAreaId = areaId;
     isResizing = true;
     resizeHandle = handle;
-    dragStart = { x: event.clientX, y: event.clientY };
+    dragStart = { x: coords.clientX, y: coords.clientY };
     initialArea = blurAreas.find(a => a.id === areaId) || null;
   }
 
@@ -339,6 +376,16 @@
   const selectedArea = $derived(
     blurAreas.find(area => area.id === selectedAreaId)
   );
+
+  // Unified touch handlers
+  const handleContainerTouchStart = handleContainerMouseDown;
+  const handleTouchMove = handleMouseMove;
+
+  function handleTouchEnd(event: TouchEvent) {
+    if (event.touches.length === 0) {
+      handleMouseUp();
+    }
+  }
 </script>
 
 <svelte:window
@@ -348,6 +395,7 @@
 
 <!-- Overlay -->
 <div
+  bind:this={containerElement}
   class="blur-tool-overlay"
   onmousedown={handleContainerMouseDown}
   role="button"
@@ -390,6 +438,7 @@
           stroke-width={isSelected ? "3" : "2"}
           stroke-dasharray="5,5"
           onmousedown={(e) => handleAreaMouseDown(e, area.id)}
+          ontouchstart={(e) => handleAreaMouseDown(e, area.id)}
           style="cursor: move;"
         />
 
@@ -417,6 +466,7 @@
               stroke="#fff"
               stroke-width="2"
               onmousedown={(e) => handleHandleMouseDown(e, area.id, handle)}
+              ontouchstart={(e) => handleHandleMouseDown(e, area.id, handle)}
               style="cursor: {cursor};"
             />
           {/each}
@@ -627,5 +677,14 @@
 
   .panel-hint p {
     margin: 0;
+  }
+
+  /* Larger touch targets for mobile */
+  @media (max-width: 767px) {
+    .blur-tool-svg rect[fill="rgba(100, 150, 255, 0.9)"] {
+      width: 16px !important;
+      height: 16px !important;
+      stroke-width: 3 !important;
+    }
   }
 </style>

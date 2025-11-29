@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
   import type { StampArea, Viewport, TransformState, CropArea, StampAsset } from '../types';
   import { STAMP_ASSETS } from '../config/stamps';
@@ -18,6 +19,35 @@
   }
 
   let { canvas, image, viewport, transform, stampAreas, cropArea, onUpdate, onClose, onViewportChange }: Props = $props();
+
+  let overlayElement = $state<HTMLDivElement | null>(null);
+
+  // Helper to get coordinates from mouse or touch event
+  function getEventCoords(event: MouseEvent | TouchEvent): { clientX: number; clientY: number } {
+    if ('touches' in event && event.touches.length > 0) {
+      return { clientX: event.touches[0].clientX, clientY: event.touches[0].clientY };
+    } else if ('clientX' in event) {
+      return { clientX: event.clientX, clientY: event.clientY };
+    }
+    return { clientX: 0, clientY: 0 };
+  }
+
+  onMount(() => {
+    if (overlayElement) {
+      // Add touch event listeners with passive: false to allow preventDefault
+      overlayElement.addEventListener('touchstart', handleCanvasTouchStart as any, { passive: false });
+      overlayElement.addEventListener('touchmove', handleTouchMove as any, { passive: false });
+      overlayElement.addEventListener('touchend', handleTouchEnd as any, { passive: false });
+    }
+
+    return () => {
+      if (overlayElement) {
+        overlayElement.removeEventListener('touchstart', handleCanvasTouchStart as any);
+        overlayElement.removeEventListener('touchmove', handleTouchMove as any);
+        overlayElement.removeEventListener('touchend', handleTouchEnd as any);
+      }
+    };
+  });
 
   // Default stamp size as percentage of the smaller dimension of the image
   const DEFAULT_STAMP_SIZE_PERCENT = 0.1; // 10%
@@ -70,12 +100,13 @@
     });
   });
 
-  function handleCanvasMouseDown(event: MouseEvent) {
+  function handleCanvasMouseDown(event: MouseEvent | TouchEvent) {
     if (!canvas || !image) return;
 
+    const coords = getEventCoords(event);
     const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
+    const mouseX = coords.clientX - rect.left;
+    const mouseY = coords.clientY - rect.top;
 
     // Check if clicking on rotation handle (se corner)
     for (const canvasStamp of canvasStampAreas) {
@@ -87,7 +118,7 @@
       if (dist <= 10) {
         isRotating = true;
         selectedStampId = stamp.id;
-        dragStart = { x: event.clientX, y: event.clientY };
+        dragStart = { x: coords.clientX, y: coords.clientY };
         initialStamp = { ...stamp };
         initialRotation = stamp.rotation || 0;
         rotationCenter = { x: canvasStamp.canvasCenterX, y: canvasStamp.canvasCenterY };
@@ -108,7 +139,7 @@
         isResizing = true;
         resizeHandle = handle;
         selectedStampId = stamp.id;
-        dragStart = { x: event.clientX, y: event.clientY };
+        dragStart = { x: coords.clientX, y: coords.clientY };
         initialStamp = { ...stamp };
         event.preventDefault();
         return;
@@ -122,7 +153,7 @@
         if (stamp) {
           selectedStampId = stamp.id;
           isDragging = true;
-          dragStart = { x: event.clientX, y: event.clientY };
+          dragStart = { x: coords.clientX, y: coords.clientY };
           initialStamp = { ...stamp };
           event.preventDefault();
           return;
@@ -130,17 +161,22 @@
       }
     }
 
-    // Deselect if clicking on empty area
+    // If clicking outside any stamp, deselect and start panning
     selectedStampId = null;
+    isPanning = true;
+    lastPanPosition = { x: coords.clientX, y: coords.clientY };
+    event.preventDefault();
   }
 
-  function handleMouseMove(event: MouseEvent) {
+  function handleMouseMove(event: MouseEvent | TouchEvent) {
     if (!canvas || !image) return;
+
+    const coords = getEventCoords(event);
 
     // Handle panning
     if (isPanning && onViewportChange) {
-      const deltaX = event.clientX - lastPanPosition.x;
-      const deltaY = event.clientY - lastPanPosition.y;
+      const deltaX = coords.clientX - lastPanPosition.x;
+      const deltaY = coords.clientY - lastPanPosition.y;
 
       const imgWidth = image.width;
       const imgHeight = image.height;
@@ -163,15 +199,15 @@
         offsetY: clampedOffsetY
       });
 
-      lastPanPosition = { x: event.clientX, y: event.clientY };
+      lastPanPosition = { x: coords.clientX, y: coords.clientY };
       event.preventDefault();
       return;
     }
 
     // Handle dragging
     if (isDragging && initialStamp && selectedStampId) {
-      const deltaX = event.clientX - dragStart.x;
-      const deltaY = event.clientY - dragStart.y;
+      const deltaX = coords.clientX - dragStart.x;
+      const deltaY = coords.clientY - dragStart.y;
 
       const totalScale = viewport.scale * viewport.zoom;
       const imgDeltaX = deltaX / totalScale;
@@ -192,8 +228,8 @@
 
     // Handle resizing
     if (isResizing && initialStamp && resizeHandle && selectedStampId) {
-      const deltaX = event.clientX - dragStart.x;
-      const deltaY = event.clientY - dragStart.y;
+      const deltaX = coords.clientX - dragStart.x;
+      const deltaY = coords.clientY - dragStart.y;
 
       const totalScale = viewport.scale * viewport.zoom;
       const imgDeltaX = deltaX / totalScale;
@@ -238,8 +274,8 @@
     // Handle rotation
     if (isRotating && initialStamp && selectedStampId) {
       const rect = canvas.getBoundingClientRect();
-      const mouseX = event.clientX - rect.left;
-      const mouseY = event.clientY - rect.top;
+      const mouseX = coords.clientX - rect.left;
+      const mouseY = coords.clientY - rect.top;
 
       // Calculate current angle from center to mouse position
       const currentAngle = Math.atan2(mouseY - rotationCenter.y, mouseX - rotationCenter.x) * (180 / Math.PI);
@@ -259,13 +295,23 @@
     }
   }
 
-  function handleMouseUp(event: MouseEvent) {
+  function handleMouseUp(event?: MouseEvent | TouchEvent) {
     isDragging = false;
     isResizing = false;
     isRotating = false;
     isPanning = false;
     resizeHandle = null;
     initialStamp = null;
+  }
+
+  // Unified touch handlers
+  const handleCanvasTouchStart = handleCanvasMouseDown;
+  const handleTouchMove = handleMouseMove;
+
+  function handleTouchEnd(event: TouchEvent) {
+    if (event.touches.length === 0) {
+      handleMouseUp();
+    }
   }
 
   function getResizeHandle(mouseX: number, mouseY: number, canvasStamp: any): string | null {
@@ -449,6 +495,7 @@
   </div>
 
   <div
+    bind:this={overlayElement}
     class="stamp-canvas-overlay"
     onmousedown={handleCanvasMouseDown}
     role="button"
@@ -631,6 +678,11 @@
     height: 100%;
     pointer-events: all;
     user-select: none;
+    cursor: grab;
+  }
+
+  .stamp-canvas-overlay:active {
+    cursor: grabbing;
   }
 
   .stamp-svg {
@@ -679,5 +731,17 @@
   .control-btn.delete:hover {
     background: #dd0000;
     border-color: #ee0000;
+  }
+
+  /* Larger touch targets for mobile */
+  @media (max-width: 767px) {
+    .stamp-svg circle {
+      r: 12 !important;
+      stroke-width: 3 !important;
+    }
+
+    .stamp-svg circle[fill="#00cc00"] {
+      r: 14 !important;
+    }
   }
 </style>

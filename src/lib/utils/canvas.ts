@@ -1,5 +1,5 @@
 import type { CropArea, TransformState, ExportOptions, Viewport, AdjustmentsState, BlurArea, StampArea } from '../types';
-import { applyAdjustments, applyPixelAdjustments } from './adjustments';
+import { applyAllAdjustments, applyGaussianBlur } from './adjustments';
 
 // Image cache for stamp images
 const stampImageCache = new Map<string, HTMLImageElement>();
@@ -70,10 +70,11 @@ export function drawImage(
 
   // Clear canvas
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.save();
 
-  // Apply adjustments via CSS filters
-  applyAdjustments(ctx, adjustments);
+  // Ensure filter is reset before starting
+  ctx.filter = 'none';
+
+  ctx.save();
 
   // Apply viewport transformations
   const centerX = canvas.width / 2;
@@ -115,9 +116,9 @@ export function drawImage(
 
   ctx.restore();
 
-  // Apply pixel-level adjustments (exposure, highlights, shadows, vignette)
-  // Note: This modifies the canvas pixels after drawing
-  applyPixelAdjustments(canvas, img, viewport, adjustments, cropArea);
+  // Apply all adjustments via pixel manipulation (Safari-compatible)
+  // This modifies the canvas pixels after drawing
+  applyAllAdjustments(canvas, img, viewport, adjustments, cropArea);
 
   // Apply blur areas
   if (blurAreas && blurAreas.length > 0) {
@@ -168,10 +169,10 @@ export function applyTransform(
   canvas.width = needsSwap ? sourceHeight : sourceWidth;
   canvas.height = needsSwap ? sourceWidth : sourceHeight;
 
-  ctx.save();
+  // Ensure filter is reset before starting
+  ctx.filter = 'none';
 
-  // Apply adjustments via CSS filters
-  applyAdjustments(ctx, adjustments);
+  ctx.save();
 
   ctx.translate(canvas.width / 2, canvas.height / 2);
   ctx.rotate((transform.rotation * Math.PI) / 180);
@@ -198,7 +199,7 @@ export function applyTransform(
 
   ctx.restore();
 
-  // Apply pixel-level adjustments
+  // Apply all adjustments via pixel manipulation (Safari-compatible)
   // For export, create a centered viewport with no offset
   const exportViewport: Viewport = {
     zoom: 1,
@@ -206,7 +207,7 @@ export function applyTransform(
     offsetY: 0,
     scale: 1
   };
-  applyPixelAdjustments(canvas, img, exportViewport, adjustments, cropArea);
+  applyAllAdjustments(canvas, img, exportViewport, adjustments, cropArea);
 
   // Apply blur areas for export
   if (blurAreas.length > 0) {
@@ -280,7 +281,7 @@ export function imageToScreenCoords(
 
 /**
  * Apply blur effects to specified areas of the canvas
- * Uses a layer-based approach: clips regions and redraws with blur filter
+ * Uses pixel manipulation for Safari compatibility
  */
 export function applyBlurAreas(
   canvas: HTMLCanvasElement,
@@ -295,13 +296,6 @@ export function applyBlurAreas(
   const centerX = canvas.width / 2;
   const centerY = canvas.height / 2;
   const totalScale = viewport.scale * viewport.zoom;
-
-  // Create a temporary canvas to store the current canvas state
-  const tempCanvas = document.createElement('canvas');
-  tempCanvas.width = canvas.width;
-  tempCanvas.height = canvas.height;
-  const tempCtx = tempCanvas.getContext('2d');
-  if (!tempCtx) return;
 
   blurAreas.forEach(blurArea => {
     // Determine source dimensions based on crop
@@ -336,71 +330,19 @@ export function applyBlurAreas(
 
     if (clippedWidth <= 0 || clippedHeight <= 0) return;
 
-    // Add padding for blur to work properly at edges
+    // Calculate blur radius in pixels
     const imageBlurPx = (blurArea.blurStrength / 100) * 100;
-    const blurAmount = imageBlurPx * totalScale;
-    const padding = Math.ceil(blurAmount * 3);
+    const blurRadius = imageBlurPx * totalScale;
 
-    const paddedX = Math.max(0, clippedX - padding);
-    const paddedY = Math.max(0, clippedY - padding);
-    const paddedRight = Math.min(canvas.width, clippedRight + padding);
-    const paddedBottom = Math.min(canvas.height, clippedBottom + padding);
-    const paddedWidth = paddedRight - paddedX;
-    const paddedHeight = paddedBottom - paddedY;
-
-    // Extract the region from current canvas (which already has adjustments applied)
-    tempCanvas.width = paddedWidth;
-    tempCanvas.height = paddedHeight;
-    tempCtx.clearRect(0, 0, paddedWidth, paddedHeight);
-    tempCtx.drawImage(
+    // Apply Gaussian blur to the region using pixel manipulation
+    applyGaussianBlur(
       canvas,
-      paddedX, paddedY, paddedWidth, paddedHeight,
-      0, 0, paddedWidth, paddedHeight
+      clippedX,
+      clippedY,
+      clippedWidth,
+      clippedHeight,
+      blurRadius
     );
-
-    // Create SVG filter for blur
-    const svgNS = 'http://www.w3.org/2000/svg';
-    const svg = document.createElementNS(svgNS, 'svg');
-    svg.setAttribute('width', '0');
-    svg.setAttribute('height', '0');
-    svg.style.position = 'absolute';
-
-    const defs = document.createElementNS(svgNS, 'defs');
-    const filter = document.createElementNS(svgNS, 'filter');
-    const filterId = `blur-filter-${Date.now()}-${Math.random()}`;
-    filter.setAttribute('id', filterId);
-    filter.setAttribute('x', '-50%');
-    filter.setAttribute('y', '-50%');
-    filter.setAttribute('width', '200%');
-    filter.setAttribute('height', '200%');
-
-    const feGaussianBlur = document.createElementNS(svgNS, 'feGaussianBlur');
-    feGaussianBlur.setAttribute('stdDeviation', blurAmount.toString());
-    feGaussianBlur.setAttribute('edgeMode', 'duplicate');
-
-    filter.appendChild(feGaussianBlur);
-    defs.appendChild(filter);
-    svg.appendChild(defs);
-    document.body.appendChild(svg);
-
-    // Apply blur to the extracted region
-    tempCtx.filter = `url(#${filterId})`;
-    tempCtx.drawImage(tempCanvas, 0, 0);
-    tempCtx.filter = 'none';
-
-    // Calculate the portion to draw back (excluding padding)
-    const srcX = clippedX - paddedX;
-    const srcY = clippedY - paddedY;
-
-    // Draw the blurred region back to the main canvas
-    ctx.drawImage(
-      tempCanvas,
-      srcX, srcY, clippedWidth, clippedHeight,
-      clippedX, clippedY, clippedWidth, clippedHeight
-    );
-
-    // Cleanup
-    document.body.removeChild(svg);
   });
 }
 

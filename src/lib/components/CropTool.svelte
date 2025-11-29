@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
   import { RotateCw, RotateCcw, FlipHorizontal, FlipVertical } from 'lucide-svelte';
   import type { CropArea, Viewport, TransformState } from '../types';
@@ -16,6 +17,8 @@
   }
 
   let { canvas, image, viewport, transform, onApply, onCancel, onViewportChange, onTransformChange }: Props = $props();
+
+  let containerElement = $state<HTMLDivElement | null>(null);
 
   // Crop area in image coordinates
   let cropArea = $state<CropArea>({
@@ -70,15 +73,31 @@
     };
   });
 
+  onMount(() => {
+    if (containerElement) {
+      // Add touch event listeners with passive: false to allow preventDefault
+      containerElement.addEventListener('touchstart', handleContainerTouchStartUnified as any, { passive: false });
+      containerElement.addEventListener('touchmove', handleContainerTouchMoveUnified as any, { passive: false });
+      containerElement.addEventListener('touchend', handleContainerTouchEndUnified as any, { passive: false });
+    }
+
+    return () => {
+      if (containerElement) {
+        containerElement.removeEventListener('touchstart', handleContainerTouchStartUnified as any);
+        containerElement.removeEventListener('touchmove', handleContainerTouchMoveUnified as any);
+        containerElement.removeEventListener('touchend', handleContainerTouchEndUnified as any);
+      }
+    };
+  });
+
   $effect(() => {
     if (image) {
-      // Initialize crop area to center of image
-      const size = Math.min(image.width, image.height, 300);
+      // Initialize crop area to full image size
       cropArea = {
-        x: (image.width - size) / 2,
-        y: (image.height - size) / 2,
-        width: size,
-        height: size
+        x: 0,
+        y: 0,
+        width: image.width,
+        height: image.height
       };
     }
   });
@@ -101,11 +120,19 @@
     }
   }
 
+  // Get handle size based on device type (larger for touch)
+  function getHandleRadius(event: Event): number {
+    return 'touches' in event ? 20 : 6; // 20px for touch, 6px for mouse
+  }
+
   function handleContainerMouseDown(event: MouseEvent | TouchEvent) {
     if (!canvas || !canvasCoords) return;
 
     // Check if it's a mouse event with non-left button
     if ('button' in event && event.button !== 0) return;
+
+    // For touch events, only handle single touch for panning
+    if ('touches' in event && event.touches.length > 1) return;
 
     // Check if click is inside crop area
     const rect = canvas.getBoundingClientRect();
@@ -127,6 +154,7 @@
     isPanning = true;
     lastPanPosition = { x: coords.clientX, y: coords.clientY };
   }
+
 
   function handleMouseMove(event: MouseEvent | TouchEvent) {
     if (!canvas || !image) return;
@@ -232,6 +260,8 @@
     resizeHandle = null;
     initialCropArea = null;
   }
+
+  // These will be defined below after pinch zoom handlers are renamed
 
   function apply() {
     onApply(cropArea);
@@ -356,7 +386,7 @@
     }
   }
 
-  function handleTouchStart(event: TouchEvent) {
+  function handlePinchZoomStart(event: TouchEvent) {
     if (!canvas || !canvasCoords || event.touches.length !== 2) return;
 
     const rect = canvas.getBoundingClientRect();
@@ -393,7 +423,7 @@
     initialCropSize = { width: cropArea.width, height: cropArea.height };
   }
 
-  function handleTouchMove(event: TouchEvent) {
+  function handlePinchZoomMove(event: TouchEvent) {
     if (!image || !canvas || !canvasCoords || event.touches.length !== 2) return;
     if (initialPinchDistance === 0 || !initialCropSize) return;
 
@@ -421,7 +451,7 @@
 
     // If both touches are outside crop area, let event bubble
     if (!touch1Inside && !touch2Inside) {
-      handleTouchEnd();
+      handlePinchZoomEnd();
       return;
     }
 
@@ -489,9 +519,41 @@
     }
   }
 
-  function handleTouchEnd() {
+  function handlePinchZoomEnd() {
     initialPinchDistance = 0;
     initialCropSize = null;
+  }
+
+  // Unified touch handlers that delegate based on finger count
+  function handleContainerTouchStartUnified(event: TouchEvent) {
+    // Two fingers = pinch zoom crop area
+    if (event.touches.length === 2) {
+      handlePinchZoomStart(event);
+    } else if (event.touches.length === 1) {
+      // Single finger = pan viewport (if outside crop) or let SVG handle drag/resize (if inside)
+      handleContainerMouseDown(event);
+    }
+  }
+
+  function handleContainerTouchMoveUnified(event: TouchEvent) {
+    // If pinch is active (2 fingers)
+    if (event.touches.length === 2 && initialPinchDistance > 0) {
+      handlePinchZoomMove(event);
+    } else {
+      // Single finger move (pan viewport, or drag/resize crop handled by mouse move)
+      handleMouseMove(event);
+    }
+  }
+
+  function handleContainerTouchEndUnified(event: TouchEvent) {
+    if (event.touches.length === 0) {
+      // All fingers lifted
+      handleMouseUp();
+      handlePinchZoomEnd();
+    } else if (event.touches.length === 1 && initialPinchDistance > 0) {
+      // Went from 2 fingers to 1 finger
+      handlePinchZoomEnd();
+    }
   }
 
   function rotateLeft() {
@@ -524,13 +586,11 @@
 
 {#if canvasCoords && canvas}
   <div
+    bind:this={containerElement}
     class="crop-container"
     class:panning={isPanning}
     onwheel={handleWheel}
     onmousedown={handleContainerMouseDown}
-    ontouchstart={handleTouchStart}
-    ontouchmove={handleTouchMove}
-    ontouchend={handleTouchEnd}
   >
   <svg
     class="crop-overlay"
@@ -963,5 +1023,13 @@
 
   .btn-secondary:hover {
     background: #777;
+  }
+
+  /* Larger touch targets for mobile */
+  @media (max-width: 767px) {
+    .crop-overlay circle {
+      r: 12 !important;
+      stroke-width: 3 !important;
+    }
   }
 </style>

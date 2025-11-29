@@ -59,6 +59,187 @@
     }
   }
 
+  // Apply adjustments to canvas via pixel manipulation (Safari-compatible)
+  function applyAdjustmentsToCanvas(
+    ctx: CanvasRenderingContext2D,
+    canvas: HTMLCanvasElement,
+    adjustments: AdjustmentsState
+  ) {
+    // Skip if no adjustments needed
+    if (
+      adjustments.exposure === 0 &&
+      adjustments.contrast === 0 &&
+      adjustments.highlights === 0 &&
+      adjustments.shadows === 0 &&
+      adjustments.brightness === 0 &&
+      adjustments.saturation === 0 &&
+      adjustments.hue === 0 &&
+      adjustments.vignette === 0 &&
+      adjustments.sepia === 0 &&
+      adjustments.grayscale === 0
+    ) {
+      return;
+    }
+
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+
+    // Pre-calculate adjustment factors
+    const hasExposure = adjustments.exposure !== 0;
+    const hasContrast = adjustments.contrast !== 0;
+    const hasBrightness = adjustments.brightness !== 0;
+    const hasSaturation = adjustments.saturation !== 0;
+    const hasHue = adjustments.hue !== 0;
+    const hasSepia = adjustments.sepia !== 0;
+    const hasGrayscale = adjustments.grayscale !== 0;
+
+    const exposureFactor = hasExposure ? Math.pow(2, adjustments.exposure / 100) : 1;
+    const contrastFactor = hasContrast ? 1 + (adjustments.contrast / 200) : 1;
+    const brightnessFactor = hasBrightness ? 1 + (adjustments.brightness / 200) : 1;
+    const saturationFactor = hasSaturation ? adjustments.saturation / 100 : 0;
+    const hueShift = adjustments.hue;
+    const sepiaAmount = adjustments.sepia / 100;
+    const grayscaleAmount = adjustments.grayscale / 100;
+
+    const needsHSL = hasSaturation || hasHue;
+
+    for (let i = 0; i < data.length; i += 4) {
+      let r = data[i];
+      let g = data[i + 1];
+      let b = data[i + 2];
+
+      // Apply brightness
+      if (hasBrightness) {
+        r *= brightnessFactor;
+        g *= brightnessFactor;
+        b *= brightnessFactor;
+      }
+
+      // Apply contrast
+      if (hasContrast) {
+        r = ((r - 128) * contrastFactor) + 128;
+        g = ((g - 128) * contrastFactor) + 128;
+        b = ((b - 128) * contrastFactor) + 128;
+      }
+
+      // Apply exposure
+      if (hasExposure) {
+        r *= exposureFactor;
+        g *= exposureFactor;
+        b *= exposureFactor;
+      }
+
+      // Apply saturation and hue via HSL
+      if (needsHSL) {
+        r = Math.max(0, Math.min(255, r));
+        g = Math.max(0, Math.min(255, g));
+        b = Math.max(0, Math.min(255, b));
+
+        const [h, s, l] = rgbToHsl(r, g, b);
+        let newH = h;
+        let newS = s;
+
+        if (hasSaturation) {
+          newS = Math.max(0, Math.min(100, s * (1 + saturationFactor)));
+        }
+
+        if (hasHue) {
+          newH = (h + hueShift + 360) % 360;
+        }
+
+        [r, g, b] = hslToRgb(newH, newS, l);
+      }
+
+      // Apply sepia
+      if (hasSepia) {
+        const tr = (0.393 * r + 0.769 * g + 0.189 * b);
+        const tg = (0.349 * r + 0.686 * g + 0.168 * b);
+        const tb = (0.272 * r + 0.534 * g + 0.131 * b);
+        r = r * (1 - sepiaAmount) + tr * sepiaAmount;
+        g = g * (1 - sepiaAmount) + tg * sepiaAmount;
+        b = b * (1 - sepiaAmount) + tb * sepiaAmount;
+      }
+
+      // Apply grayscale
+      if (hasGrayscale) {
+        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        r = r * (1 - grayscaleAmount) + gray * grayscaleAmount;
+        g = g * (1 - grayscaleAmount) + gray * grayscaleAmount;
+        b = b * (1 - grayscaleAmount) + gray * grayscaleAmount;
+      }
+
+      // Clamp final values
+      data[i] = Math.max(0, Math.min(255, r));
+      data[i + 1] = Math.max(0, Math.min(255, g));
+      data[i + 2] = Math.max(0, Math.min(255, b));
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+  }
+
+  // RGB to HSL conversion
+  function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+    r /= 255;
+    g /= 255;
+    b /= 255;
+
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    let h = 0;
+    let s = 0;
+    const l = (max + min) / 2;
+
+    if (max !== min) {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+
+      switch (max) {
+        case r:
+          h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+          break;
+        case g:
+          h = ((b - r) / d + 2) / 6;
+          break;
+        case b:
+          h = ((r - g) / d + 4) / 6;
+          break;
+      }
+    }
+
+    return [h * 360, s * 100, l * 100];
+  }
+
+  // HSL to RGB conversion
+  function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+    h /= 360;
+    s /= 100;
+    l /= 100;
+
+    let r: number, g: number, b: number;
+
+    if (s === 0) {
+      r = g = b = l;
+    } else {
+      const hue2rgb = (p: number, q: number, t: number) => {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1 / 6) return p + (q - p) * 6 * t;
+        if (t < 1 / 2) return q;
+        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+        return p;
+      };
+
+      const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+      const p = 2 * l - q;
+
+      r = hue2rgb(p, q, h + 1 / 3);
+      g = hue2rgb(p, q, h);
+      b = hue2rgb(p, q, h - 1 / 3);
+    }
+
+    return [r * 255, g * 255, b * 255];
+  }
+
   // Generate previews asynchronously
   async function generateFilterPreviews() {
     if (!image || isGenerating) return;
@@ -97,30 +278,11 @@
         const ctx = canvas.getContext('2d');
 
         if (ctx) {
-          // Build CSS filter string (only basic filters)
-          const filters = [];
-          if (presetAdjustments.brightness !== 0) {
-            filters.push(`brightness(${100 + presetAdjustments.brightness}%)`);
-          }
-          if (presetAdjustments.contrast !== 0) {
-            filters.push(`contrast(${100 + presetAdjustments.contrast}%)`);
-          }
-          if (presetAdjustments.saturation !== 0) {
-            filters.push(`saturate(${100 + presetAdjustments.saturation}%)`);
-          }
-          if (presetAdjustments.grayscale !== 0) {
-            filters.push(`grayscale(${presetAdjustments.grayscale}%)`);
-          }
-          if (presetAdjustments.sepia !== 0) {
-            filters.push(`sepia(${presetAdjustments.sepia}%)`);
-          }
-          if (presetAdjustments.hue !== 0) {
-            filters.push(`hue-rotate(${presetAdjustments.hue}deg)`);
-          }
-
-          // Apply filters and draw
-          ctx.filter = filters.length > 0 ? filters.join(' ') : 'none';
+          // Draw base image first
           ctx.drawImage(baseImg, 0, 0);
+
+          // Apply filters via pixel manipulation (Safari-compatible)
+          applyAdjustmentsToCanvas(ctx, canvas, presetAdjustments);
 
           filterPreviews.set(preset.id, canvas.toDataURL('image/jpeg', 0.7));
           filterPreviews = new Map(filterPreviews);
