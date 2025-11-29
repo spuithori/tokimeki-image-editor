@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { drawImage } from '../utils/canvas';
-  import type { Viewport, TransformState, CropArea } from '../types';
+  import { drawImage, preloadStampImage } from '../utils/canvas';
+  import type { Viewport, TransformState, CropArea, AdjustmentsState, BlurArea, StampArea } from '../types';
 
   interface Props {
     canvas?: HTMLCanvasElement | null;
@@ -10,7 +10,10 @@
     image: HTMLImageElement | null;
     viewport: Viewport;
     transform: TransformState;
+    adjustments: AdjustmentsState;
     cropArea?: CropArea | null;
+    blurAreas?: BlurArea[];
+    stampAreas?: StampArea[];
     onZoom?: (delta: number, centerX?: number, centerY?: number) => void;
   }
 
@@ -21,13 +24,17 @@
     image,
     viewport,
     transform,
+    adjustments,
     cropArea = null,
+    blurAreas = [],
+    stampAreas = [],
     onZoom
   }: Props = $props();
 
   let canvasElement = $state<HTMLCanvasElement | null>(null);
   let isPanning = $state(false);
   let lastPanPosition = $state({ x: 0, y: 0 });
+  let imageLoadCounter = $state(0); // Trigger redraw when images load
 
   onMount(() => {
     if (canvasElement) {
@@ -35,12 +42,29 @@
     }
   });
 
+  // Preload stamp images
+  $effect(() => {
+    if (!stampAreas) return;
+
+    stampAreas.forEach(stamp => {
+      if (stamp.stampType === 'image' || stamp.stampType === 'svg') {
+        preloadStampImage(stamp.stampContent).then(() => {
+          // Trigger redraw when image loads
+          imageLoadCounter++;
+        }).catch(console.error);
+      }
+    });
+  });
+
+  // Draw canvas
   $effect(() => {
     if (canvasElement && image) {
       canvasElement.width = width;
       canvasElement.height = height;
-      drawImage(canvasElement, image, viewport, transform, cropArea);
+      drawImage(canvasElement, image, viewport, transform, adjustments, cropArea, blurAreas, stampAreas);
     }
+    // Include imageLoadCounter as dependency to redraw when images load
+    imageLoadCounter;
   });
 
   function handleMouseDown(e: MouseEvent) {

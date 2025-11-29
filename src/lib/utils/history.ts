@@ -14,12 +14,18 @@ export function createEmptyHistory(): EditorHistory {
 export function createSnapshot(
   cropArea: any,
   transform: any,
-  viewport: any
+  adjustments: any,
+  viewport: any,
+  blurAreas: any[] = [],
+  stampAreas: any[] = []
 ): HistorySnapshot {
   return {
     cropArea: cropArea ? { ...cropArea } : null,
     transform: { ...transform },
-    viewport: { ...viewport }
+    adjustments: { ...adjustments },
+    viewport: { ...viewport },
+    blurAreas: blurAreas.map(area => ({ ...area })),
+    stampAreas: stampAreas.map(area => ({ ...area }))
   };
 }
 

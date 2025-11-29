@@ -4,6 +4,11 @@
     "upload": "Upload Image",
     "crop": "Crop",
     "rotate": "Rotate",
+    "adjust": "Adjust",
+    "filter": "Filter",
+    "blur": "Blur",
+    "stamp": "Stamp",
+    "none": "None",
     "flip": "Flip",
     "flipHorizontal": "Flip Horizontal",
     "flipVertical": "Flip Vertical",
@@ -13,6 +18,8 @@
     "reset": "Reset",
     "apply": "Apply",
     "cancel": "Cancel",
+    "close": "Close",
+    "delete": "Delete",
     "zoom": "Zoom",
     "quality": "Quality",
     "format": "Format",
@@ -20,13 +27,42 @@
     "dropImageHere": "Drop image here or click to upload",
     "noImage": "No image loaded",
     "undo": "Undo",
-    "redo": "Redo"
+    "redo": "Redo",
+    "selectStamp": "Select Stamp"
   },
   "toolbar": {
     "crop": "Crop Tool",
     "rotate": "Rotate & Flip",
+    "adjust": "Adjust Image",
+    "filter": "Filters",
+    "blur": "Blur Tool",
+    "stamp": "Stamp Tool",
     "export": "Export Image",
     "undo": "Undo (Ctrl+Z)",
     "redo": "Redo (Ctrl+Shift+Z)"
+  },
+  "adjustments": {
+    "exposure": "Exposure",
+    "contrast": "Contrast",
+    "highlights": "Highlights",
+    "shadows": "Shadows",
+    "brightness": "Brightness",
+    "saturation": "Saturation",
+    "hue": "Hue",
+    "vignette": "Vignette"
+  },
+  "filters": {
+    "vivid": "Vivid",
+    "sepia": "Sepia",
+    "monochrome": "Monochrome",
+    "vintage": "Vintage",
+    "warm": "Warm",
+    "cool": "Cool",
+    "film": "Film",
+    "info": "Selecting a filter will override all current adjustments."
+  },
+  "blur": {
+    "strength": "Blur Strength",
+    "hint": "Drag on the image to create a blur area. Click on an existing area to edit it."
   }
 }

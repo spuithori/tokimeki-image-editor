@@ -1,5 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
+  import { RotateCw, RotateCcw, FlipHorizontal, FlipVertical } from 'lucide-svelte';
   import type { CropArea, Viewport, TransformState } from '../types';
   import { screenToImageCoords, imageToCanvasCoords } from '../utils/canvas';
 
@@ -11,9 +12,10 @@
     onApply: (cropArea: CropArea) => void;
     onCancel: () => void;
     onViewportChange?: (viewport: Partial<Viewport>) => void;
+    onTransformChange?: (transform: Partial<TransformState>) => void;
   }
 
-  let { canvas, image, viewport, transform, onApply, onCancel, onViewportChange }: Props = $props();
+  let { canvas, image, viewport, transform, onApply, onCancel, onViewportChange, onTransformChange }: Props = $props();
 
   // Crop area in image coordinates
   let cropArea = $state<CropArea>({
@@ -474,6 +476,28 @@
     initialPinchDistance = 0;
     initialCropSize = null;
   }
+
+  function rotateLeft() {
+    if (!onTransformChange) return;
+    const newRotation = (transform.rotation - 90 + 360) % 360;
+    onTransformChange({ rotation: newRotation });
+  }
+
+  function rotateRight() {
+    if (!onTransformChange) return;
+    const newRotation = (transform.rotation + 90) % 360;
+    onTransformChange({ rotation: newRotation });
+  }
+
+  function toggleFlipHorizontal() {
+    if (!onTransformChange) return;
+    onTransformChange({ flipHorizontal: !transform.flipHorizontal });
+  }
+
+  function toggleFlipVertical() {
+    if (!onTransformChange) return;
+    onTransformChange({ flipVertical: !transform.flipVertical });
+  }
 </script>
 
 <svelte:window
@@ -661,18 +685,55 @@
     />
   </svg>
 
-  <!-- Aspect ratio buttons -->
-  <div class="aspect-ratio-controls">
-    <div class="aspect-ratio-label">Aspect Ratio:</div>
-    <button class="aspect-btn" onclick={() => setAspectRatio(16/9)}>
-      16:9
-    </button>
-    <button class="aspect-btn" onclick={() => setAspectRatio(3/2)}>
-      3:2
-    </button>
-    <button class="aspect-btn" onclick={() => setAspectRatio(1/1)}>
-      1:1
-    </button>
+  <!-- Aspect ratio and transform controls -->
+  <div class="crop-top-controls">
+    <div class="transform-controls">
+      <div class="control-group">
+        <div class="control-label">{$_('editor.rotate')}</div>
+        <div class="button-group">
+          <button class="transform-btn" onclick={rotateLeft} title={$_('editor.rotateLeft')}>
+            <RotateCcw size={18} />
+          </button>
+          <button class="transform-btn" onclick={rotateRight} title={$_('editor.rotateRight')}>
+            <RotateCw size={18} />
+          </button>
+        </div>
+      </div>
+
+      <div class="control-group">
+        <div class="control-label">{$_('editor.flip')}</div>
+        <div class="button-group">
+          <button
+            class="transform-btn"
+            class:active={transform.flipHorizontal}
+            onclick={toggleFlipHorizontal}
+            title={$_('editor.flipHorizontal')}
+          >
+            <FlipHorizontal size={18} />
+          </button>
+          <button
+            class="transform-btn"
+            class:active={transform.flipVertical}
+            onclick={toggleFlipVertical}
+            title={$_('editor.flipVertical')}
+          >
+            <FlipVertical size={18} />
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="aspect-ratio-controls">
+      <button class="aspect-btn" onclick={() => setAspectRatio(16/9)}>
+        16:9
+      </button>
+      <button class="aspect-btn" onclick={() => setAspectRatio(3/2)}>
+        3:2
+      </button>
+      <button class="aspect-btn" onclick={() => setAspectRatio(1/1)}>
+        1:1
+      </button>
+    </div>
   </div>
 
   <!-- Control buttons -->
@@ -704,24 +765,52 @@
     z-index: 10;
   }
 
-  .aspect-ratio-controls {
+  .crop-top-controls {
     position: absolute;
     top: 1rem;
     left: 50%;
     transform: translateX(-50%);
     display: flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    background: rgba(0, 0, 0, 0.7);
-    border-radius: 4px;
+    flex-direction: column;
+    gap: 0.75rem;
     z-index: 20;
   }
 
-  .aspect-ratio-label {
+  .aspect-ratio-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    background: rgba(0, 0, 0, 0.8);
+    border-radius: 4px;
+    width: fit-content;
+  }
+
+  .transform-controls {
+    display: flex;
+    gap: 1rem;
+    padding: 0.5rem 1rem;
+    background: rgba(0, 0, 0, 0.8);
+    border-radius: 4px;
+  }
+
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .control-label {
     font-size: 0.85rem;
     color: #ccc;
-    margin-right: 0.5rem;
+    margin-right: 0.25rem;
+  }
+
+  .button-group {
+    display: flex;
+    gap: 0.25rem;
   }
 
   .aspect-btn {
@@ -736,6 +825,30 @@
   }
 
   .aspect-btn:hover {
+    background: #0066cc;
+    border-color: #0077dd;
+  }
+
+  .transform-btn {
+    padding: 0.4rem 0.6rem;
+    background: #333;
+    color: #fff;
+    border: 1px solid #555;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .transform-btn:hover {
+    background: #444;
+    border-color: #666;
+  }
+
+  .transform-btn.active {
     background: #0066cc;
     border-color: #0077dd;
   }

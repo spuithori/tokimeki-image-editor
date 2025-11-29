@@ -4,6 +4,11 @@
     "upload": "画像をアップロード",
     "crop": "トリミング",
     "rotate": "回転",
+    "adjust": "調整",
+    "filter": "フィルター",
+    "blur": "ぼかし",
+    "stamp": "スタンプ",
+    "none": "なし",
     "flip": "反転",
     "flipHorizontal": "左右反転",
     "flipVertical": "上下反転",
@@ -13,6 +18,8 @@
     "reset": "リセット",
     "apply": "適用",
     "cancel": "キャンセル",
+    "close": "閉じる",
+    "delete": "削除",
     "zoom": "ズーム",
     "quality": "品質",
     "format": "形式",
@@ -20,13 +27,42 @@
     "dropImageHere": "画像をドロップまたはクリックしてアップロード",
     "noImage": "画像が読み込まれていません",
     "undo": "元に戻す",
-    "redo": "やり直す"
+    "redo": "やり直す",
+    "selectStamp": "スタンプを選択"
   },
   "toolbar": {
     "crop": "トリミングツール",
     "rotate": "回転・反転",
+    "adjust": "画像調整",
+    "filter": "フィルター",
+    "blur": "ぼかしツール",
+    "stamp": "スタンプツール",
     "export": "画像をエクスポート",
     "undo": "元に戻す (Ctrl+Z)",
     "redo": "やり直す (Ctrl+Shift+Z)"
+  },
+  "adjustments": {
+    "exposure": "露出",
+    "contrast": "コントラスト",
+    "highlights": "ハイライト",
+    "shadows": "シャドウ",
+    "brightness": "明るさ",
+    "saturation": "彩度",
+    "hue": "色合い",
+    "vignette": "周辺光量補正"
+  },
+  "filters": {
+    "vivid": "ビビッド",
+    "sepia": "セピア",
+    "monochrome": "モノクローム",
+    "vintage": "ビンテージ",
+    "warm": "ウォーム",
+    "cool": "クール",
+    "film": "フィルム",
+    "info": "フィルターを選択すると、すべての調整値が上書きされます。"
+  },
+  "blur": {
+    "strength": "ぼかしの強さ",
+    "hint": "画像上をドラッグしてぼかし領域を作成します。既存の領域をクリックすると編集できます。"
   }
 }

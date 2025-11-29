@@ -1,12 +1,16 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import type { EditorMode, EditorState, CropArea, TransformState, Viewport } from '../types';
+  import type { EditorMode, EditorState, CropArea, TransformState, Viewport, AdjustmentsState, BlurArea } from '../types';
   import { loadImage, calculateFitScale, exportCanvas, downloadImage, applyTransform } from '../utils/canvas';
   import { createEmptyHistory, createSnapshot, addToHistory, undo, redo, canUndo, canRedo } from '../utils/history';
+  import { createDefaultAdjustments } from '../utils/adjustments';
   import Toolbar from './Toolbar.svelte';
   import Canvas from './Canvas.svelte';
   import CropTool from './CropTool.svelte';
-  import RotateTool from './RotateTool.svelte';
+  import AdjustTool from './AdjustTool.svelte';
+  import FilterTool from './FilterTool.svelte';
+  import BlurTool from './BlurTool.svelte';
+  import StampTool from './StampTool.svelte';
   import ExportTool from './ExportTool.svelte';
 
   interface Props {
@@ -38,6 +42,7 @@
       flipVertical: false,
       scale: 1
     },
+    adjustments: createDefaultAdjustments(),
     exportOptions: {
       format: 'png',
       quality: 0.9
@@ -48,11 +53,15 @@
       offsetY: 0,
       scale: 1
     },
-    history: createEmptyHistory()
+    history: createEmptyHistory(),
+    blurAreas: [],
+    stampAreas: []
   });
 
   let canvasElement = $state<HTMLCanvasElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
+  let adjustmentThrottleTimer: number | null = null;
+  let pendingAdjustments: Partial<AdjustmentsState> | null = null;
 
   async function handleFileUpload(file: File) {
     try {
@@ -79,6 +88,7 @@
         offsetY: 0,
         scale: fitScale
       };
+      state.blurAreas = [];
 
       // Reset history and save initial state
       state.history = createEmptyHistory();
@@ -139,13 +149,56 @@
     saveToHistory();
   }
 
+  function handleAdjustmentsChange(adjustments: Partial<AdjustmentsState>) {
+    // Immediately update state for responsive UI
+    state.adjustments = { ...state.adjustments, ...adjustments };
+
+    // Store pending adjustments for history
+    pendingAdjustments = { ...pendingAdjustments, ...adjustments };
+
+    // Clear existing timer
+    if (adjustmentThrottleTimer !== null) {
+      clearTimeout(adjustmentThrottleTimer);
+    }
+
+    // Only save to history after user stops adjusting (300ms delay)
+    adjustmentThrottleTimer = window.setTimeout(() => {
+      if (pendingAdjustments !== null) {
+        saveToHistory();
+        pendingAdjustments = null;
+      }
+      adjustmentThrottleTimer = null;
+    }, 300);
+  }
+
+  function handleFilterApply(adjustments: AdjustmentsState) {
+    // Replace all adjustments with filter preset
+    state.adjustments = adjustments;
+
+    // Save to history immediately for filter changes
+    saveToHistory();
+  }
+
+  function handleBlurAreasChange(blurAreas: BlurArea[]) {
+    state.blurAreas = blurAreas;
+    saveToHistory();
+  }
+
+  function handleStampAreasChange(stampAreas: StampArea[]) {
+    state.stampAreas = stampAreas;
+    saveToHistory();
+  }
+
   function handleExport() {
     if (!state.imageData.original) return;
 
     const exportCanvas = applyTransform(
       state.imageData.original,
       state.transform,
-      state.cropArea
+      state.adjustments,
+      state.cropArea,
+      state.blurAreas,
+      state.stampAreas
     );
 
     const dataUrl = exportCanvas.toDataURL(
@@ -205,7 +258,7 @@
   }
 
   function saveToHistory() {
-    const snapshot = createSnapshot(state.cropArea, state.transform, state.viewport);
+    const snapshot = createSnapshot(state.cropArea, state.transform, state.adjustments, state.viewport, state.blurAreas, state.stampAreas);
     state.history = addToHistory(state.history, snapshot);
   }
 
@@ -213,7 +266,10 @@
     if (!snapshot) return;
     state.cropArea = snapshot.cropArea ? { ...snapshot.cropArea } : null;
     state.transform = { ...snapshot.transform };
+    state.adjustments = { ...snapshot.adjustments };
     state.viewport = { ...snapshot.viewport };
+    state.blurAreas = snapshot.blurAreas ? snapshot.blurAreas.map((area: any) => ({ ...area })) : [];
+    state.stampAreas = snapshot.stampAreas ? snapshot.stampAreas.map((area: any) => ({ ...area })) : [];
   }
 
   function handleUndo() {
@@ -270,19 +326,6 @@
 <svelte:window onkeydown={handleKeyDown} />
 
 <div class="image-editor" style="width: {width}px;">
-  <div class="editor-header">
-    <Toolbar
-      mode={state.mode}
-      hasImage={!!state.imageData.original}
-      canUndo={canUndo(state.history)}
-      canRedo={canRedo(state.history)}
-      onModeChange={handleModeChange}
-      onReset={handleReset}
-      onUndo={handleUndo}
-      onRedo={handleRedo}
-    />
-  </div>
-
   <div class="editor-body">
     {#if !state.imageData.original}
       <div
@@ -319,7 +362,10 @@
           image={state.imageData.original}
           viewport={state.viewport}
           transform={state.transform}
+          adjustments={state.adjustments}
           cropArea={state.cropArea}
+          blurAreas={state.blurAreas}
+          stampAreas={state.stampAreas}
           onZoom={handleZoom}
         />
 
@@ -332,27 +378,75 @@
             onApply={handleCropApply}
             onCancel={() => state.mode = null}
             onViewportChange={handleViewportChange}
+            onTransformChange={handleTransformChange}
+          />
+        {:else if state.mode === 'blur'}
+          <BlurTool
+            canvas={canvasElement}
+            image={state.imageData.original}
+            viewport={state.viewport}
+            transform={state.transform}
+            blurAreas={state.blurAreas}
+            cropArea={state.cropArea}
+            onUpdate={handleBlurAreasChange}
+            onClose={() => state.mode = null}
+            onViewportChange={handleViewportChange}
+          />
+        {:else if state.mode === 'stamp'}
+          <StampTool
+            canvas={canvasElement}
+            image={state.imageData.original}
+            viewport={state.viewport}
+            transform={state.transform}
+            stampAreas={state.stampAreas}
+            cropArea={state.cropArea}
+            onUpdate={handleStampAreasChange}
+            onClose={() => state.mode = null}
+            onViewportChange={handleViewportChange}
           />
         {/if}
-      </div>
 
-      <div class="tools-panel">
-        {#if state.mode === 'rotate'}
-          <RotateTool
-            transform={state.transform}
-            onChange={handleTransformChange}
-            onClose={() => state.mode = null}
-          />
+        {#if state.mode === 'adjust'}
+          <div class="tools-panel">
+            <AdjustTool
+              adjustments={state.adjustments}
+              onChange={handleAdjustmentsChange}
+              onClose={() => state.mode = null}
+            />
+          </div>
+        {:else if state.mode === 'filter'}
+          <div class="tools-panel">
+            <FilterTool
+              adjustments={state.adjustments}
+              onChange={handleFilterApply}
+              onClose={() => state.mode = null}
+            />
+          </div>
         {:else if state.mode === 'export'}
-          <ExportTool
-            options={state.exportOptions}
-            onChange={(options) => state.exportOptions = { ...state.exportOptions, ...options }}
-            onExport={handleExport}
-            onClose={() => state.mode = null}
-          />
+          <div class="tools-panel">
+            <ExportTool
+              options={state.exportOptions}
+              onChange={(options) => state.exportOptions = { ...state.exportOptions, ...options }}
+              onExport={handleExport}
+              onClose={() => state.mode = null}
+            />
+          </div>
         {/if}
       </div>
     {/if}
+  </div>
+
+  <div class="editor-header">
+    <Toolbar
+      mode={state.mode}
+      hasImage={!!state.imageData.original}
+      canUndo={canUndo(state.history)}
+      canRedo={canRedo(state.history)}
+      onModeChange={handleModeChange}
+      onReset={handleReset}
+      onUndo={handleUndo}
+      onRedo={handleRedo}
+    />
   </div>
 </div>
 
@@ -369,8 +463,8 @@
 
   .editor-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    width: 100%;
   }
 
   .editor-body {
@@ -413,9 +507,13 @@
   }
 
   .tools-panel {
-    min-height: 80px;
     padding: 1rem;
     background: #2a2a2a;
     border-radius: 8px;
+    position: absolute;
+    width: min-content;
+    right: 1rem;
+    top: 1rem;
+    bottom: 1rem;
   }
 </style>

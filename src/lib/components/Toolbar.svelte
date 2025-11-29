@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { Crop, RotateCw, Download, RotateCcw, Undo2, Redo2 } from 'lucide-svelte';
+  import { Crop, RotateCw, Download, RotateCcw, Undo2, Redo2, SlidersHorizontal, Sparkles, Droplet, Sticker } from 'lucide-svelte';
   import type { EditorMode } from '../types';
 
   interface Props {
@@ -27,86 +27,105 @@
 </script>
 
 <div class="toolbar">
-  <div class="toolbar-group">
-    <button
-      class="toolbar-btn"
-      class:active={mode === 'crop'}
-      disabled={!hasImage}
-      onclick={() => onModeChange('crop')}
-      title={$_('toolbar.crop')}
-    >
-      <Crop size={20} />
-      <span>{$_('editor.crop')}</span>
-    </button>
+  <button
+    class="toolbar-btn"
+    disabled={!canUndo}
+    onclick={onUndo}
+    title={$_('toolbar.undo')}
+  >
+    <Undo2 size={20} />
+  </button>
 
-    <button
-      class="toolbar-btn"
-      class:active={mode === 'rotate'}
-      disabled={!hasImage}
-      onclick={() => onModeChange('rotate')}
-      title={$_('toolbar.rotate')}
-    >
-      <RotateCw size={20} />
-      <span>{$_('editor.rotate')}</span>
-    </button>
+  <button
+    class="toolbar-btn"
+    disabled={!canRedo}
+    onclick={onRedo}
+    title={$_('toolbar.redo')}
+  >
+    <Redo2 size={20} />
+  </button>
 
-    <button
-      class="toolbar-btn"
-      class:active={mode === 'export'}
-      disabled={!hasImage}
-      onclick={() => onModeChange('export')}
-      title={$_('toolbar.export')}
-    >
-      <Download size={20} />
-      <span>{$_('editor.export')}</span>
-    </button>
-  </div>
+  <button
+    class="toolbar-btn toolbar-btn--mr"
+    disabled={!hasImage}
+    onclick={onReset}
+    title={$_('editor.reset')}
+  >
+    <RotateCcw size={20} />
+  </button>
 
-  <div class="toolbar-group">
-    <button
-      class="toolbar-btn"
-      disabled={!canUndo}
-      onclick={onUndo}
-      title={$_('toolbar.undo')}
-    >
-      <Undo2 size={20} />
-      <span>{$_('editor.undo')}</span>
-    </button>
+  <button
+    class="toolbar-btn"
+    class:active={mode === 'crop'}
+    disabled={!hasImage}
+    onclick={() => onModeChange('crop')}
+    title={$_('toolbar.crop')}
+  >
+    <Crop size={20} />
+    <span>{$_('editor.crop')}</span>
+  </button>
 
-    <button
-      class="toolbar-btn"
-      disabled={!canRedo}
-      onclick={onRedo}
-      title={$_('toolbar.redo')}
-    >
-      <Redo2 size={20} />
-      <span>{$_('editor.redo')}</span>
-    </button>
-  </div>
+  <button
+    class="toolbar-btn"
+    class:active={mode === 'adjust'}
+    disabled={!hasImage}
+    onclick={() => onModeChange('adjust')}
+    title={$_('toolbar.adjust')}
+  >
+    <SlidersHorizontal size={20} />
+    <span>{$_('editor.adjust')}</span>
+  </button>
 
-  <div class="toolbar-group">
-    <button
-      class="toolbar-btn"
-      disabled={!hasImage}
-      onclick={onReset}
-      title={$_('editor.reset')}
-    >
-      <RotateCcw size={20} />
-      <span>{$_('editor.reset')}</span>
-    </button>
-  </div>
+  <button
+    class="toolbar-btn"
+    class:active={mode === 'filter'}
+    disabled={!hasImage}
+    onclick={() => onModeChange('filter')}
+    title={$_('toolbar.filter')}
+  >
+    <Sparkles size={20} />
+    <span>{$_('editor.filter')}</span>
+  </button>
+
+  <button
+    class="toolbar-btn"
+    class:active={mode === 'blur'}
+    disabled={!hasImage}
+    onclick={() => onModeChange('blur')}
+    title={$_('toolbar.blur')}
+  >
+    <Droplet size={20} />
+    <span>{$_('editor.blur')}</span>
+  </button>
+
+  <button
+    class="toolbar-btn"
+    class:active={mode === 'stamp'}
+    disabled={!hasImage}
+    onclick={() => onModeChange('stamp')}
+    title={$_('toolbar.stamp')}
+  >
+    <Sticker size={20} />
+    <span>{$_('editor.stamp')}</span>
+  </button>
+
+  <button
+    class="toolbar-btn"
+    class:active={mode === 'export'}
+    disabled={!hasImage}
+    onclick={() => onModeChange('export')}
+    title={$_('toolbar.export')}
+  >
+    <Download size={20} />
+  </button>
 </div>
 
 <style lang="postcss">
   .toolbar {
+    width: 100%;
     display: flex;
-    gap: 1rem;
+    gap: .5rem;
     align-items: center;
-  }
-
-  .toolbar-group {
-    display: flex;
-    gap: 0.5rem;
   }
 
   .toolbar-btn {
@@ -121,6 +140,10 @@
     cursor: pointer;
     transition: all 0.2s;
     font-size: 0.9rem;
+
+    &--mr {
+      margin-right: auto;
+    }
   }
 
   .toolbar-btn:hover:not(:disabled) {
