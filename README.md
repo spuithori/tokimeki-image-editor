@@ -19,6 +19,10 @@ https://tokimeki-image-editor.vercel.app/
 
 # Install
 
+```
+npm install tokimeki-image-editor
+```
+
 WIP
 
 # Usage 
