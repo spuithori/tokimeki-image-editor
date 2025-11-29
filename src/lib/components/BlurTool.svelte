@@ -679,11 +679,10 @@
     margin: 0;
   }
 
-  /* Larger touch targets for mobile */
   @media (max-width: 767px) {
     .blur-tool-svg rect[fill="rgba(100, 150, 255, 0.9)"] {
-      width: 16px !important;
-      height: 16px !important;
+      width: 20px !important;
+      height: 20px !important;
       stroke-width: 3 !important;
     }
   }

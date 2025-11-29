@@ -37,6 +37,8 @@
   let imageLoadCounter = $state(0); // Trigger redraw when images load
   let initialPinchDistance = $state(0);
   let initialZoom = $state(1);
+  let renderRequested = $state(false);
+  let pendingRenderFrame: number | null = null;
 
   onMount(() => {
     if (canvasElement) {
@@ -58,6 +60,41 @@
     };
   });
 
+  // Request a render using requestAnimationFrame
+  function requestRender() {
+    if (renderRequested) return;
+
+    renderRequested = true;
+    if (pendingRenderFrame !== null) {
+      cancelAnimationFrame(pendingRenderFrame);
+    }
+
+    pendingRenderFrame = requestAnimationFrame(() => {
+      performRender();
+      renderRequested = false;
+      pendingRenderFrame = null;
+    });
+  }
+
+  // Perform the actual render
+  function performRender() {
+    if (!canvasElement || !image) return;
+
+    canvasElement.width = width;
+    canvasElement.height = height;
+
+    drawImage(
+      canvasElement,
+      image,
+      viewport,
+      transform,
+      adjustments,
+      cropArea,
+      blurAreas,
+      stampAreas
+    );
+  }
+
   // Preload stamp images
   $effect(() => {
     if (!stampAreas) return;
@@ -72,14 +109,20 @@
     });
   });
 
-  // Draw canvas
+  // Draw canvas - use requestAnimationFrame for optimal performance
   $effect(() => {
     if (canvasElement && image) {
-      canvasElement.width = width;
-      canvasElement.height = height;
-      drawImage(canvasElement, image, viewport, transform, adjustments, cropArea, blurAreas, stampAreas);
+      requestRender();
     }
-    // Include imageLoadCounter as dependency to redraw when images load
+    // Include all dependencies
+    width;
+    height;
+    viewport;
+    transform;
+    adjustments;
+    cropArea;
+    blurAreas;
+    stampAreas;
     imageLoadCounter;
   });
 
@@ -217,6 +260,8 @@
 
 <canvas
   bind:this={canvasElement}
+  width={width}
+  height={height}
   class="editor-canvas"
   class:panning={isPanning}
   style="max-width: 100%; max-height: {height}px;"

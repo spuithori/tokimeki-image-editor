@@ -297,6 +297,11 @@ export function applyBlurAreas(
   const centerY = canvas.height / 2;
   const totalScale = viewport.scale * viewport.zoom;
 
+  // Create a temporary canvas to extract regions for blurring
+  const tempCanvas = document.createElement('canvas');
+  const tempCtx = tempCanvas.getContext('2d');
+  if (!tempCtx) return;
+
   blurAreas.forEach(blurArea => {
     // Determine source dimensions based on crop
     const sourceWidth = cropArea ? cropArea.width : img.width;
@@ -334,14 +339,45 @@ export function applyBlurAreas(
     const imageBlurPx = (blurArea.blurStrength / 100) * 100;
     const blurRadius = imageBlurPx * totalScale;
 
-    // Apply Gaussian blur to the region using pixel manipulation
-    applyGaussianBlur(
+    // Add padding for blur to work properly at edges
+    const padding = Math.ceil(blurRadius * 2);
+
+    const paddedX = Math.max(0, clippedX - padding);
+    const paddedY = Math.max(0, clippedY - padding);
+    const paddedRight = Math.min(canvas.width, clippedRight + padding);
+    const paddedBottom = Math.min(canvas.height, clippedBottom + padding);
+    const paddedWidth = paddedRight - paddedX;
+    const paddedHeight = paddedBottom - paddedY;
+
+    // Extract the padded region from the canvas
+    tempCanvas.width = paddedWidth;
+    tempCanvas.height = paddedHeight;
+    tempCtx.clearRect(0, 0, paddedWidth, paddedHeight);
+    tempCtx.drawImage(
       canvas,
-      clippedX,
-      clippedY,
-      clippedWidth,
-      clippedHeight,
+      paddedX, paddedY, paddedWidth, paddedHeight,
+      0, 0, paddedWidth, paddedHeight
+    );
+
+    // Apply blur to the temporary canvas
+    applyGaussianBlur(
+      tempCanvas,
+      0,
+      0,
+      paddedWidth,
+      paddedHeight,
       blurRadius
+    );
+
+    // Calculate the portion to draw back (excluding padding)
+    const srcX = clippedX - paddedX;
+    const srcY = clippedY - paddedY;
+
+    // Draw only the non-padded portion back to the main canvas
+    ctx.drawImage(
+      tempCanvas,
+      srcX, srcY, clippedWidth, clippedHeight,
+      clippedX, clippedY, clippedWidth, clippedHeight
     );
   });
 }
