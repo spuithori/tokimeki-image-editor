@@ -34,6 +34,10 @@
     onViewportChange
   }: Props = $props();
 
+  // Constants
+  const PAN_OVERFLOW_MARGIN = 0.2; // Allow 20% overflow when panning
+
+  // State
   let canvasElement = $state<HTMLCanvasElement | null>(null);
   let overlayCanvasElement = $state<HTMLCanvasElement | null>(null);
   let isInitializing = $state(true);  // Prevent 2D rendering before WebGPU check
@@ -44,12 +48,44 @@
   // 2D Canvas fallback state
   let isPanning = $state(false);
   let lastPanPosition = $state({ x: 0, y: 0 });
-  let imageLoadCounter = $state(0);
+  let imageLoadCounter = $state(0); // Incremented to trigger re-render when stamp images load
   let initialPinchDistance = $state(0);
   let initialZoom = $state(1);
   let renderRequested = $state(false);
   let pendingRenderFrame: number | null = null;
   let needsAnotherRender = $state(false);
+
+  // Helper functions
+  function ensureCanvasSize(canvas: HTMLCanvasElement, w: number, h: number): void {
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+  }
+
+  function calculatePanOffset(
+    deltaX: number,
+    deltaY: number
+  ): { clampedOffsetX: number; clampedOffsetY: number } | null {
+    if (!image || !canvasElement) return null;
+
+    const imgWidth = cropArea ? cropArea.width : image.width;
+    const imgHeight = cropArea ? cropArea.height : image.height;
+    const totalScale = viewport.scale * viewport.zoom;
+    const scaledWidth = imgWidth * totalScale;
+    const scaledHeight = imgHeight * totalScale;
+
+    const maxOffsetX = (scaledWidth / 2) - (canvasElement.width / 2) + (canvasElement.width * PAN_OVERFLOW_MARGIN);
+    const maxOffsetY = (scaledHeight / 2) - (canvasElement.height / 2) + (canvasElement.height * PAN_OVERFLOW_MARGIN);
+
+    const newOffsetX = viewport.offsetX + deltaX;
+    const newOffsetY = viewport.offsetY + deltaY;
+
+    const clampedOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
+    const clampedOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+
+    return { clampedOffsetX, clampedOffsetY };
+  }
 
   onMount(async () => {
     if (!canvasElement) return;
@@ -63,30 +99,19 @@
       if (success) {
         useWebGPU = true;
         webgpuReady = true;
-        isInitializing = false;
         console.log('✅ Using WebGPU rendering');
-
-        // Setup touch event listeners for WebGPU mode
-        canvasElement.addEventListener('touchstart', handleTouchStart, { passive: false });
-        canvasElement.addEventListener('touchmove', handleTouchMove, { passive: false });
-        canvasElement.addEventListener('touchend', handleTouchEnd, { passive: false });
-
-        return () => {
-          if (canvasElement) {
-            canvasElement.removeEventListener('touchstart', handleTouchStart);
-            canvasElement.removeEventListener('touchmove', handleTouchMove);
-            canvasElement.removeEventListener('touchend', handleTouchEnd);
-          }
-        };
+      } else {
+        console.log('⚠️ WebGPU not available, using 2D Canvas fallback');
+        useWebGPU = false;
       }
+    } else {
+      console.log('⚠️ WebGPU not available, using 2D Canvas fallback');
+      useWebGPU = false;
     }
 
-    // Fallback to 2D Canvas
-    console.log('⚠️ WebGPU not available, using 2D Canvas fallback');
-    useWebGPU = false;
     isInitializing = false;
 
-    // Setup touch event listeners for 2D mode
+    // Setup touch event listeners (common for both modes)
     canvasElement.addEventListener('touchstart', handleTouchStart, { passive: false });
     canvasElement.addEventListener('touchmove', handleTouchMove, { passive: false });
     canvasElement.addEventListener('touchend', handleTouchEnd, { passive: false });
@@ -185,11 +210,7 @@
   function renderWebGPU() {
     if (!canvasElement || !webgpuReady || !currentImage) return;
 
-    // Set canvas size if needed
-    if (canvasElement.width !== width || canvasElement.height !== height) {
-      canvasElement.width = width;
-      canvasElement.height = height;
-    }
+    ensureCanvasSize(canvasElement, width, height);
 
     renderWithAdjustments(
       adjustments,
@@ -205,11 +226,7 @@
 
     // Render stamps on overlay canvas
     if (overlayCanvasElement && stampAreas.length > 0) {
-      // Set overlay canvas size
-      if (overlayCanvasElement.width !== width || overlayCanvasElement.height !== height) {
-        overlayCanvasElement.width = width;
-        overlayCanvasElement.height = height;
-      }
+      ensureCanvasSize(overlayCanvasElement, width, height);
 
       // Clear overlay canvas
       const ctx = overlayCanvasElement.getContext('2d');
@@ -284,28 +301,13 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
-    if (isPanning && image && canvasElement) {
+    if (isPanning) {
       const deltaX = e.clientX - lastPanPosition.x;
       const deltaY = e.clientY - lastPanPosition.y;
 
-      const imgWidth = cropArea ? cropArea.width : image.width;
-      const imgHeight = cropArea ? cropArea.height : image.height;
-      const totalScale = viewport.scale * viewport.zoom;
-      const scaledWidth = imgWidth * totalScale;
-      const scaledHeight = imgHeight * totalScale;
-
-      const overflowMargin = 0.2;
-      const maxOffsetX = (scaledWidth / 2) - (canvasElement.width / 2) + (canvasElement.width * overflowMargin);
-      const maxOffsetY = (scaledHeight / 2) - (canvasElement.height / 2) + (canvasElement.height * overflowMargin);
-
-      const newOffsetX = viewport.offsetX + deltaX;
-      const newOffsetY = viewport.offsetY + deltaY;
-
-      const clampedOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
-      const clampedOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
-
-      if (onViewportChange) {
-        onViewportChange({ offsetX: clampedOffsetX, offsetY: clampedOffsetY });
+      const result = calculatePanOffset(deltaX, deltaY);
+      if (result && onViewportChange) {
+        onViewportChange({ offsetX: result.clampedOffsetX, offsetY: result.clampedOffsetY });
       }
 
       lastPanPosition = { x: e.clientX, y: e.clientY };
@@ -329,31 +331,16 @@
   }
 
   function handleTouchMove(e: TouchEvent) {
-    if (e.touches.length === 1 && isPanning && image && canvasElement) {
+    if (e.touches.length === 1 && isPanning) {
       e.preventDefault();
 
       const touch = e.touches[0];
       const deltaX = touch.clientX - lastPanPosition.x;
       const deltaY = touch.clientY - lastPanPosition.y;
 
-      const imgWidth = cropArea ? cropArea.width : image.width;
-      const imgHeight = cropArea ? cropArea.height : image.height;
-      const totalScale = viewport.scale * viewport.zoom;
-      const scaledWidth = imgWidth * totalScale;
-      const scaledHeight = imgHeight * totalScale;
-
-      const overflowMargin = 0.2;
-      const maxOffsetX = (scaledWidth / 2) - (canvasElement.width / 2) + (canvasElement.width * overflowMargin);
-      const maxOffsetY = (scaledHeight / 2) - (canvasElement.height / 2) + (canvasElement.height * overflowMargin);
-
-      const newOffsetX = viewport.offsetX + deltaX;
-      const newOffsetY = viewport.offsetY + deltaY;
-
-      const clampedOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
-      const clampedOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
-
-      if (onViewportChange) {
-        onViewportChange({ offsetX: clampedOffsetX, offsetY: clampedOffsetY });
+      const result = calculatePanOffset(deltaX, deltaY);
+      if (result && onViewportChange) {
+        onViewportChange({ offsetX: result.clampedOffsetX, offsetY: result.clampedOffsetY });
       }
 
       lastPanPosition = { x: touch.clientX, y: touch.clientY };
