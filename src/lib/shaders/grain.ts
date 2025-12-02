@@ -1,4 +1,4 @@
-// Grain shader - applies film grain on top of processed image
+export const GRAIN_SHADER_CODE = `// Grain shader - applies film grain on top of processed image
 // This shader is designed to be used as a final pass after blur
 
 struct VertexOutput {
@@ -223,3 +223,4 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
 
   return vec4<f32>(rgb, color.a);
 }
+`;

@@ -1,8 +1,10 @@
 import type { AdjustmentsState, Viewport, TransformState, CropArea, BlurArea } from '../types';
-import SHADER_CODE from '../shaders/image-editor.wgsl?raw';
-import BLUR_SHADER_CODE from '../shaders/blur.wgsl?raw';
-import COMPOSITE_SHADER_CODE from '../shaders/composite.wgsl?raw';
-import GRAIN_SHADER_CODE from '../shaders/grain.wgsl?raw';
+import { IMAGE_EDITOR_SHADER_CODE } from '../shaders/image-editor';
+import { BLUR_SHADER_CODE } from '../shaders/blur';
+import { COMPOSITE_SHADER_CODE } from '../shaders/composite';
+import { GRAIN_SHADER_CODE } from '../shaders/grain';
+
+const SHADER_CODE = IMAGE_EDITOR_SHADER_CODE;
 
 /**
  * WebGPU Render Pipeline for image adjustments with viewport and transform support
@@ -873,6 +875,12 @@ export async function exportWithWebGPU(
   blurAreas: BlurArea[] = []
 ): Promise<HTMLCanvasElement | null> {
   try {
+    // Detect mobile devices
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    if (isMobile) {
+      console.log('Mobile device detected, WebGPU export may have limited support');
+    }
+
     // Get adapter and device
     if (!navigator.gpu) {
       console.warn('WebGPU not supported for export');
@@ -1365,6 +1373,52 @@ export async function exportWithWebGPU(
 
     // Wait for rendering to complete
     await device.queue.onSubmittedWorkDone();
+
+    // Validate that the canvas has actual content (not all black)
+    // This is important for mobile devices where WebGPU might fail silently
+    try {
+      const ctx2d = document.createElement('canvas').getContext('2d');
+      if (ctx2d) {
+        const testCanvas = document.createElement('canvas');
+        testCanvas.width = Math.min(canvas.width, 100);
+        testCanvas.height = Math.min(canvas.height, 100);
+        const testCtx = testCanvas.getContext('2d');
+
+        if (testCtx) {
+          // Draw a small portion of the WebGPU canvas to test
+          testCtx.drawImage(canvas, 0, 0, testCanvas.width, testCanvas.height);
+          const imageData = testCtx.getImageData(0, 0, testCanvas.width, testCanvas.height);
+          const data = imageData.data;
+
+          // Check if at least some pixels are non-zero
+          let hasContent = false;
+          for (let i = 0; i < data.length; i += 4) {
+            // Check RGB values (ignore alpha)
+            if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) {
+              hasContent = true;
+              break;
+            }
+          }
+
+          if (!hasContent) {
+            console.warn('WebGPU export produced empty/black canvas, will use Canvas2D fallback');
+            // Cleanup before returning null
+            texture.destroy();
+            intermediate1.destroy();
+            intermediate2.destroy();
+            intermediate3.destroy();
+            intermediate4.destroy();
+            mainUniformBuffer.destroy();
+            blurUniformBuffer.destroy();
+            grainUniformBuffer.destroy();
+            return null;
+          }
+        }
+      }
+    } catch (validationError) {
+      console.warn('Failed to validate WebGPU canvas, assuming it is valid:', validationError);
+      // If validation fails, assume the canvas is valid and continue
+    }
 
     // Cleanup
     texture.destroy();
