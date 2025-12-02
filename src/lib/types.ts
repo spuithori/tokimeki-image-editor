@@ -62,6 +62,8 @@ export interface AdjustmentsState {
   vignette: number;     // -100 to +100 (negative = darken edges, positive = brighten edges)
   sepia: number;        // 0 to 100 (CSS filter sepia)
   grayscale: number;    // 0 to 100 (CSS filter grayscale)
+  blur: number;         // 0 to 100 (Gaussian blur applied to entire image)
+  grain: number;        // 0 to 100 (film grain effect)
 }
 
 export interface FilterPreset {

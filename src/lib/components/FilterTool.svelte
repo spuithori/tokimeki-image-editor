@@ -2,6 +2,7 @@
   import { _ } from 'svelte-i18n';
   import type { AdjustmentsState, CropArea, TransformState, Viewport } from '../types';
   import { FILTER_PRESETS, applyFilterPreset, matchesFilterPreset } from '../utils/filters';
+  import { applyGaussianBlur } from '../utils/adjustments';
   import { X } from 'lucide-svelte';
 
   interface Props {
@@ -60,23 +61,27 @@
   }
 
   // Apply adjustments to canvas via pixel manipulation (Safari-compatible)
+  // Must match the shader order and calculations EXACTLY
   function applyAdjustmentsToCanvas(
     ctx: CanvasRenderingContext2D,
     canvas: HTMLCanvasElement,
-    adjustments: AdjustmentsState
+    adjustments: AdjustmentsState,
+    sourceImageSize: { width: number; height: number }
   ) {
     // Skip if no adjustments needed
     if (
-      adjustments.exposure === 0 &&
+      adjustments.brightness === 0 &&
       adjustments.contrast === 0 &&
+      adjustments.exposure === 0 &&
       adjustments.highlights === 0 &&
       adjustments.shadows === 0 &&
-      adjustments.brightness === 0 &&
       adjustments.saturation === 0 &&
-      adjustments.hue === 0 &&
-      adjustments.vignette === 0 &&
+      adjustments.temperature === 0 &&
       adjustments.sepia === 0 &&
-      adjustments.grayscale === 0
+      adjustments.grayscale === 0 &&
+      adjustments.vignette === 0 &&
+      adjustments.blur === 0 &&
+      adjustments.grain === 0
     ) {
       return;
     }
@@ -85,96 +90,215 @@
     const data = imageData.data;
 
     // Pre-calculate adjustment factors
-    const hasExposure = adjustments.exposure !== 0;
-    const hasContrast = adjustments.contrast !== 0;
     const hasBrightness = adjustments.brightness !== 0;
+    const hasContrast = adjustments.contrast !== 0;
+    const hasExposure = adjustments.exposure !== 0;
+    const hasShadows = adjustments.shadows !== 0;
+    const hasHighlights = adjustments.highlights !== 0;
     const hasSaturation = adjustments.saturation !== 0;
-    const hasHue = adjustments.hue !== 0;
+    const hasTemperature = adjustments.temperature !== 0;
     const hasSepia = adjustments.sepia !== 0;
     const hasGrayscale = adjustments.grayscale !== 0;
+    const hasVignette = adjustments.vignette !== 0;
+    const hasBlur = adjustments.blur > 0;
+    const hasGrain = adjustments.grain > 0;
 
-    const exposureFactor = hasExposure ? Math.pow(2, adjustments.exposure / 100) : 1;
-    const contrastFactor = hasContrast ? 1 + (adjustments.contrast / 200) : 1;
     const brightnessFactor = hasBrightness ? 1 + (adjustments.brightness / 200) : 1;
+    const contrastFactor = hasContrast ? 1 + (adjustments.contrast / 200) : 1;
+    const exposureFactor = hasExposure ? Math.pow(2, adjustments.exposure / 100) : 1;
     const saturationFactor = hasSaturation ? adjustments.saturation / 100 : 0;
-    const hueShift = adjustments.hue;
+    const temperatureAmount = hasTemperature ? adjustments.temperature / 100 : 0;
     const sepiaAmount = adjustments.sepia / 100;
     const grayscaleAmount = adjustments.grayscale / 100;
+    const vignetteFactor = hasVignette ? adjustments.vignette / 100 : 0;
+    const grainAmount = hasGrain ? adjustments.grain / 100 : 0;
 
-    const needsHSL = hasSaturation || hasHue;
+    // Canvas dimensions for vignette
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
 
     for (let i = 0; i < data.length; i += 4) {
-      let r = data[i];
-      let g = data[i + 1];
-      let b = data[i + 2];
+      // Normalize to 0-1 range (match shader)
+      let r = data[i] / 255;
+      let g = data[i + 1] / 255;
+      let b = data[i + 2] / 255;
 
-      // Apply brightness
+      // 1. Brightness (FIRST, like shader)
       if (hasBrightness) {
         r *= brightnessFactor;
         g *= brightnessFactor;
         b *= brightnessFactor;
       }
 
-      // Apply contrast
+      // 2. Contrast (use 0.5 center for 0-1 range)
       if (hasContrast) {
-        r = ((r - 128) * contrastFactor) + 128;
-        g = ((g - 128) * contrastFactor) + 128;
-        b = ((b - 128) * contrastFactor) + 128;
+        r = (r - 0.5) * contrastFactor + 0.5;
+        g = (g - 0.5) * contrastFactor + 0.5;
+        b = (b - 0.5) * contrastFactor + 0.5;
       }
 
-      // Apply exposure
+      // 3. Exposure
       if (hasExposure) {
         r *= exposureFactor;
         g *= exposureFactor;
         b *= exposureFactor;
       }
 
-      // Apply saturation and hue via HSL
-      if (needsHSL) {
-        r = Math.max(0, Math.min(255, r));
-        g = Math.max(0, Math.min(255, g));
-        b = Math.max(0, Math.min(255, b));
+      // 4. Shadows and Highlights
+      if (hasShadows || hasHighlights) {
+        const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
 
-        const [h, s, l] = rgbToHsl(r, g, b);
-        let newH = h;
-        let newS = s;
-
-        if (hasSaturation) {
-          newS = Math.max(0, Math.min(100, s * (1 + saturationFactor)));
+        if (hasShadows) {
+          const shadowMask = Math.pow(1.0 - luma, 2.0);
+          r = r - r * (adjustments.shadows / 100) * shadowMask * 0.5;
+          g = g - g * (adjustments.shadows / 100) * shadowMask * 0.5;
+          b = b - b * (adjustments.shadows / 100) * shadowMask * 0.5;
         }
 
-        if (hasHue) {
-          newH = (h + hueShift + 360) % 360;
+        if (hasHighlights) {
+          const highlightMask = Math.pow(luma, 2.0);
+          r = r + r * (adjustments.highlights / 100) * highlightMask * 0.5;
+          g = g + g * (adjustments.highlights / 100) * highlightMask * 0.5;
+          b = b + b * (adjustments.highlights / 100) * highlightMask * 0.5;
         }
-
-        [r, g, b] = hslToRgb(newH, newS, l);
       }
 
-      // Apply sepia
+      // 5. Saturation (via HSL)
+      if (hasSaturation) {
+        // Clamp before HSL conversion
+        r = Math.max(0, Math.min(1, r));
+        g = Math.max(0, Math.min(1, g));
+        b = Math.max(0, Math.min(1, b));
+
+        const [h, s, l] = rgbToHsl(r * 255, g * 255, b * 255);
+        const newS = Math.max(0, Math.min(100, s * (1 + saturationFactor)));
+        [r, g, b] = hslToRgb(h, newS, l);
+        // Result is 0-255, normalize back to 0-1
+        r /= 255;
+        g /= 255;
+        b /= 255;
+      }
+
+      // 5.5. Color Temperature
+      if (hasTemperature) {
+        r = r + temperatureAmount * 0.1;
+        b = b - temperatureAmount * 0.1;
+      }
+
+      // 6. Sepia
       if (hasSepia) {
-        const tr = (0.393 * r + 0.769 * g + 0.189 * b);
-        const tg = (0.349 * r + 0.686 * g + 0.168 * b);
-        const tb = (0.272 * r + 0.534 * g + 0.131 * b);
+        const tr = 0.393 * r + 0.769 * g + 0.189 * b;
+        const tg = 0.349 * r + 0.686 * g + 0.168 * b;
+        const tb = 0.272 * r + 0.534 * g + 0.131 * b;
         r = r * (1 - sepiaAmount) + tr * sepiaAmount;
         g = g * (1 - sepiaAmount) + tg * sepiaAmount;
         b = b * (1 - sepiaAmount) + tb * sepiaAmount;
       }
 
-      // Apply grayscale
+      // 7. Grayscale
       if (hasGrayscale) {
-        const gray = 0.299 * r + 0.587 * g + 0.114 * b;
+        const gray = 0.2126 * r + 0.7152 * g + 0.0722 * b;
         r = r * (1 - grayscaleAmount) + gray * grayscaleAmount;
         g = g * (1 - grayscaleAmount) + gray * grayscaleAmount;
         b = b * (1 - grayscaleAmount) + gray * grayscaleAmount;
       }
 
-      // Clamp final values
-      data[i] = Math.max(0, Math.min(255, r));
-      data[i + 1] = Math.max(0, Math.min(255, g));
-      data[i + 2] = Math.max(0, Math.min(255, b));
+      // 8. Vignette
+      if (hasVignette) {
+        // Calculate pixel position from index
+        const pixelIndex = i / 4;
+        const x = (pixelIndex % canvas.width) / canvas.width;
+        const y = Math.floor(pixelIndex / canvas.width) / canvas.height;
+        const dx = x - 0.5;
+        const dy = y - 0.5;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const vignetteAmount = Math.pow(dist * 1.4, 2.0);
+        r = r * (1.0 + vignetteFactor * vignetteAmount * 1.5);
+        g = g * (1.0 + vignetteFactor * vignetteAmount * 1.5);
+        b = b * (1.0 + vignetteFactor * vignetteAmount * 1.5);
+      }
+
+      // Clamp values before grain processing
+      data[i] = Math.max(0, Math.min(255, r * 255));
+      data[i + 1] = Math.max(0, Math.min(255, g * 255));
+      data[i + 2] = Math.max(0, Math.min(255, b * 255));
     }
 
+    // Put adjusted image data back to canvas
     ctx.putImageData(imageData, 0, 0);
+
+    // 8.5. Apply Gaussian blur to entire image if blur adjustment is enabled
+    if (hasBlur) {
+      const blurAmount = adjustments.blur / 100;
+      // Map blur 0-100 to radius 0-10
+      const blurRadius = blurAmount * 10.0;
+      if (blurRadius > 0.1) {
+        applyGaussianBlur(canvas, 0, 0, canvas.width, canvas.height, blurRadius);
+      }
+    }
+
+    // 9. Film Grain - Applied after blur for sharp grain on top
+    if (hasGrain) {
+      // Get image data after blur has been applied
+      const grainedData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const gData = grainedData.data;
+
+      // Map canvas pixel to source image coordinates
+      // The preview shows a center-cropped square of the original image
+      const minDim = Math.min(sourceImageSize.width, sourceImageSize.height);
+      const sx = (sourceImageSize.width - minDim) / 2;
+      const sy = (sourceImageSize.height - minDim) / 2;
+
+      // Helper function for hash
+      const hash2d = (x: number, y: number) => {
+        const p3x = (x * 0.1031) % 1;
+        const p3y = (y * 0.1030) % 1;
+        const p3z = (x * 0.0973) % 1;
+        const dotP3 = p3x * (p3y + 33.33) + p3y * (p3z + 33.33) + p3z * (p3x + 33.33);
+        return ((p3x + p3y) * p3z + dotP3) % 1;
+      };
+
+      for (let i = 0; i < gData.length; i += 4) {
+        let r = gData[i] / 255;
+        let g = gData[i + 1] / 255;
+        let b = gData[i + 2] / 255;
+
+        const pixelIndex = i / 4;
+        const canvasX = pixelIndex % canvas.width;
+        const canvasY = Math.floor(pixelIndex / canvas.width);
+
+        // Calculate corresponding position in source image
+        const imageX = sx + (canvasX / canvas.width) * minDim;
+        const imageY = sy + (canvasY / canvas.height) * minDim;
+
+        // Calculate luminance for grain masking
+        const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+        // Grain visibility mask: most visible in midtones
+        let lumaMask = 1.0 - Math.abs(luma - 0.5) * 2.0;
+        lumaMask = Math.pow(lumaMask, 0.5); // Softer falloff
+
+        // Multi-scale grain for organic film look
+        const fineGrain = hash2d(Math.floor(imageX / 2.5), Math.floor(imageY / 2.5)) - 0.5;
+        const mediumGrain = hash2d(Math.floor(imageX / 5.5) + 123.45, Math.floor(imageY / 5.5) + 678.90) - 0.5;
+        const coarseGrain = hash2d(Math.floor(imageX / 9.0) + 345.67, Math.floor(imageY / 9.0) + 890.12) - 0.5;
+
+        // Combine grain layers
+        const grainNoise = fineGrain * 0.5 + mediumGrain * 0.3 + coarseGrain * 0.2;
+
+        // Strong grain intensity
+        const strength = lumaMask * grainAmount * 0.5;
+        r += grainNoise * strength;
+        g += grainNoise * strength;
+        b += grainNoise * strength;
+
+        gData[i] = Math.max(0, Math.min(255, r * 255));
+        gData[i + 1] = Math.max(0, Math.min(255, g * 255));
+        gData[i + 2] = Math.max(0, Math.min(255, b * 255));
+      }
+
+      ctx.putImageData(grainedData, 0, 0);
+    }
   }
 
   // RGB to HSL conversion
@@ -277,12 +401,15 @@
         canvas.height = PREVIEW_SIZE;
         const ctx = canvas.getContext('2d');
 
-        if (ctx) {
+        if (ctx && image) {
           // Draw base image first
           ctx.drawImage(baseImg, 0, 0);
 
           // Apply filters via pixel manipulation (Safari-compatible)
-          applyAdjustmentsToCanvas(ctx, canvas, presetAdjustments);
+          applyAdjustmentsToCanvas(ctx, canvas, presetAdjustments, {
+            width: image.width,
+            height: image.height
+          });
 
           filterPreviews.set(preset.id, canvas.toDataURL('image/jpeg', 0.7));
           filterPreviews = new Map(filterPreviews);

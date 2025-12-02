@@ -2,6 +2,7 @@ import type { AdjustmentsState, Viewport, TransformState, CropArea, BlurArea } f
 import SHADER_CODE from '../shaders/image-editor.wgsl?raw';
 import BLUR_SHADER_CODE from '../shaders/blur.wgsl?raw';
 import COMPOSITE_SHADER_CODE from '../shaders/composite.wgsl?raw';
+import GRAIN_SHADER_CODE from '../shaders/grain.wgsl?raw';
 
 /**
  * WebGPU Render Pipeline for image adjustments with viewport and transform support
@@ -28,6 +29,10 @@ let gpuCompositePipeline: GPURenderPipeline | null = null;
 let gpuCompositeUniformBuffer: GPUBuffer | null = null;
 let gpuIntermediateTexture3: GPUTexture | null = null;
 let gpuIntermediateTexture4: GPUTexture | null = null; // 4th texture for blur temp
+
+// Grain pipeline state
+let gpuGrainPipeline: GPURenderPipeline | null = null;
+let gpuGrainUniformBuffer: GPUBuffer | null = null;
 
 // Helper functions and constants
 const BLUR_UNIFORMS_ZERO = new Float32Array([1.0, 0.0, 0.0, 0.0]);
@@ -184,6 +189,32 @@ export async function initWebGPUCanvas(canvas: HTMLCanvasElement): Promise<boole
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // Create grain pipeline
+    const grainShaderModule = gpuDevice.createShaderModule({ code: GRAIN_SHADER_CODE });
+    gpuGrainPipeline = gpuDevice.createRenderPipeline({
+      layout: 'auto',
+      vertex: {
+        module: grainShaderModule,
+        entryPoint: 'vs_main',
+      },
+      fragment: {
+        module: grainShaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: format }],
+      },
+      primitive: {
+        topology: 'triangle-list',
+      },
+    });
+
+    // Create grain uniform buffer
+    // 1 (grain) + 4 (viewport) + 4 (transform) + 2 (canvas) + 2 (image) + 4 (crop) = 17 floats
+    // Padded to 20 floats for alignment (80 bytes)
+    gpuGrainUniformBuffer = gpuDevice.createBuffer({
+      size: 80, // 20 floats * 4 bytes
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
     console.log('WebGPU render pipeline initialized successfully');
     return true;
   } catch (error) {
@@ -311,9 +342,19 @@ export function renderWithAdjustments(
     // Convert rotation from degrees to radians
     const rotationRad = (transform.rotation * Math.PI) / 180;
 
+    // Check if we need multi-pass rendering (for blur or grain layering)
+    const hasGlobalBlur = adjustments.blur > 0;
+    const hasRegionalBlur = blurAreas.length > 0 && blurAreas.some(area => area.blurStrength > 0);
+    const hasGrain = adjustments.grain > 0;
+    const needsMultiPass = hasGlobalBlur || hasRegionalBlur || hasGrain;
+
+    // If grain is enabled, we apply it in a separate pass AFTER blur
+    // So pass grain=0 to the main shader
+    const mainShaderGrain = needsMultiPass ? 0 : adjustments.grain;
+
     // Update uniforms
     const uniformData = new Float32Array([
-      // Adjustments (10 floats)
+      // Adjustments (11 floats)
       adjustments.brightness,
       adjustments.contrast,
       adjustments.exposure,
@@ -324,6 +365,7 @@ export function renderWithAdjustments(
       adjustments.sepia,
       adjustments.grayscale,
       adjustments.vignette,
+      mainShaderGrain,
 
       // Viewport (4 floats)
       viewport.zoom,
@@ -351,16 +393,13 @@ export function renderWithAdjustments(
       cropArea?.width ?? 0,
       cropArea?.height ?? 0,
 
-      // Padding to 32 floats for alignment
-      0, 0, 0, 0, 0, 0
+      // Padding to 32 floats for alignment (11+4+4+2+2+4=27, need 5 padding)
+      0, 0, 0, 0, 0
     ]);
     gpuDevice.queue.writeBuffer(gpuUniformBuffer, 0, uniformData);
 
-    // Check if we need blur processing
-    const hasBlur = blurAreas.length > 0 && blurAreas.some(area => area.blurStrength > 0);
-
-    if (!hasBlur) {
-      // No blur - render directly to canvas
+    if (!needsMultiPass) {
+      // No blur or grain - render directly to canvas
       const commandEncoder = gpuDevice.createCommandEncoder();
       const textureView = gpuContext.getCurrentTexture().createView();
 
@@ -382,8 +421,19 @@ export function renderWithAdjustments(
       return true;
     }
 
-    // Has blur - use multi-pass rendering
-    return renderWithBlur(blurAreas, canvasWidth, canvasHeight, imageWidth, imageHeight, cropArea, viewport, transform);
+    // Has blur or grain - use multi-pass rendering
+    return renderWithBlur(
+      blurAreas,
+      canvasWidth,
+      canvasHeight,
+      imageWidth,
+      imageHeight,
+      cropArea,
+      viewport,
+      transform,
+      adjustments.blur,
+      adjustments.grain
+    );
   } catch (error) {
     console.error('WebGPU render failed:', error);
     return false;
@@ -391,7 +441,7 @@ export function renderWithAdjustments(
 }
 
 /**
- * Render with blur areas using regional blur compositing
+ * Render with blur (global and/or regional) and grain using multi-pass compositing
  */
 function renderWithBlur(
   blurAreas: BlurArea[],
@@ -401,12 +451,15 @@ function renderWithBlur(
   imageHeight: number,
   cropArea: CropArea | null,
   viewport: Viewport,
-  transform: TransformState
+  transform: TransformState,
+  globalBlurStrength: number = 0,
+  grainAmount: number = 0
 ): boolean {
   if (!gpuDevice || !gpuContext || !gpuPipeline || !gpuBindGroup ||
       !gpuBlurPipeline || !gpuBlurUniformBuffer ||
-      !gpuCompositePipeline || !gpuCompositeUniformBuffer || !gpuSampler) {
-    console.error('Missing WebGPU resources for blur');
+      !gpuCompositePipeline || !gpuCompositeUniformBuffer ||
+      !gpuGrainPipeline || !gpuGrainUniformBuffer || !gpuSampler) {
+    console.error('Missing WebGPU resources for multi-pass rendering');
     return false;
   }
 
@@ -472,7 +525,75 @@ function renderWithBlur(
 
   gpuDevice.queue.submit([commandEncoder.finish()]);
 
-  // === Pass 3: Process each blur area ===
+  // === Pass 3a: Apply global blur if enabled ===
+  if (globalBlurStrength > 0) {
+    // Map blur 0-100 to radius 0-10
+    const globalBlurRadius = Math.ceil((globalBlurStrength / 100) * 10);
+
+    // Horizontal blur pass (intermediate4 accumulator -> intermediate2)
+    commandEncoder = gpuDevice.createCommandEncoder();
+
+    const blurUniformsH = new Float32Array([1.0, 0.0, globalBlurRadius, 0.0]);
+    gpuDevice.queue.writeBuffer(gpuBlurUniformBuffer, 0, blurUniformsH);
+
+    const blurBindGroupH = gpuDevice.createBindGroup({
+      layout: gpuBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView4 },
+        { binding: 2, resource: { buffer: gpuBlurUniformBuffer } },
+      ],
+    });
+
+    const renderPassH = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediateView2,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    renderPassH.setPipeline(gpuBlurPipeline);
+    renderPassH.setBindGroup(0, blurBindGroupH);
+    renderPassH.draw(3, 1, 0, 0);
+    renderPassH.end();
+
+    gpuDevice.queue.submit([commandEncoder.finish()]);
+
+    // Vertical blur pass (intermediate2 -> intermediate4)
+    commandEncoder = gpuDevice.createCommandEncoder();
+
+    const blurUniformsV = new Float32Array([0.0, 1.0, globalBlurRadius, 0.0]);
+    gpuDevice.queue.writeBuffer(gpuBlurUniformBuffer, 0, blurUniformsV);
+
+    const blurBindGroupV = gpuDevice.createBindGroup({
+      layout: gpuBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView2 },
+        { binding: 2, resource: { buffer: gpuBlurUniformBuffer } },
+      ],
+    });
+
+    const renderPassV = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediateView4,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    renderPassV.setPipeline(gpuBlurPipeline);
+    renderPassV.setBindGroup(0, blurBindGroupV);
+    renderPassV.draw(3, 1, 0, 0);
+    renderPassV.end();
+
+    gpuDevice.queue.submit([commandEncoder.finish()]);
+  }
+
+  // === Pass 3b: Process each regional blur area ===
   // Determine source dimensions based on crop
   const sourceWidth = cropArea ? cropArea.width : imageWidth;
   const sourceHeight = cropArea ? cropArea.height : imageHeight;
@@ -633,34 +754,99 @@ function renderWithBlur(
     gpuDevice.queue.submit([commandEncoder.finish()]);
   }
 
-  // === Pass 4: Copy final accumulated result to canvas ===
+  // === Pass 4: Apply grain (if enabled) or copy final result to canvas ===
   commandEncoder = gpuDevice.createCommandEncoder();
 
-  gpuDevice.queue.writeBuffer(gpuBlurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
-
-  const finalBindGroup = gpuDevice.createBindGroup({
-    layout: gpuBlurPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: gpuSampler },
-      { binding: 1, resource: intermediateView4 },
-      { binding: 2, resource: { buffer: gpuBlurUniformBuffer } },
-    ],
-  });
-
   const canvasView = gpuContext.getCurrentTexture().createView();
-  const renderPassFinal = commandEncoder.beginRenderPass({
-    colorAttachments: [{
-      view: canvasView,
-      clearValue: { r: 0, g: 0, b: 0, a: 1 },
-      loadOp: 'clear',
-      storeOp: 'store',
-    }],
-  });
 
-  renderPassFinal.setPipeline(gpuBlurPipeline);
-  renderPassFinal.setBindGroup(0, finalBindGroup);
-  renderPassFinal.draw(3, 1, 0, 0);
-  renderPassFinal.end();
+  if (grainAmount > 0) {
+    // Apply grain using grain pipeline
+    const rotationRad = (transform.rotation * Math.PI) / 180;
+
+    const grainUniforms = new Float32Array([
+      // Grain parameter (1 float)
+      grainAmount,
+
+      // Viewport (4 floats)
+      viewport.zoom,
+      viewport.offsetX,
+      viewport.offsetY,
+      viewport.scale,
+
+      // Transform (4 floats)
+      rotationRad,
+      transform.flipHorizontal ? -1.0 : 1.0,
+      transform.flipVertical ? -1.0 : 1.0,
+      transform.scale,
+
+      // Canvas dimensions (2 floats)
+      canvasWidth,
+      canvasHeight,
+
+      // Image dimensions (2 floats)
+      imageWidth,
+      imageHeight,
+
+      // Crop area (4 floats)
+      cropArea?.x ?? 0,
+      cropArea?.y ?? 0,
+      cropArea?.width ?? 0,
+      cropArea?.height ?? 0,
+
+      // Padding to 20 floats (17 used, 3 padding)
+      0, 0, 0
+    ]);
+    gpuDevice.queue.writeBuffer(gpuGrainUniformBuffer, 0, grainUniforms);
+
+    const grainBindGroup = gpuDevice.createBindGroup({
+      layout: gpuGrainPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView4 },
+        { binding: 2, resource: { buffer: gpuGrainUniformBuffer } },
+      ],
+    });
+
+    const renderPassGrain = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: canvasView,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    renderPassGrain.setPipeline(gpuGrainPipeline);
+    renderPassGrain.setBindGroup(0, grainBindGroup);
+    renderPassGrain.draw(3, 1, 0, 0);
+    renderPassGrain.end();
+  } else {
+    // No grain - simple copy to canvas
+    gpuDevice.queue.writeBuffer(gpuBlurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
+
+    const finalBindGroup = gpuDevice.createBindGroup({
+      layout: gpuBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView4 },
+        { binding: 2, resource: { buffer: gpuBlurUniformBuffer } },
+      ],
+    });
+
+    const renderPassFinal = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: canvasView,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    renderPassFinal.setPipeline(gpuBlurPipeline);
+    renderPassFinal.setBindGroup(0, finalBindGroup);
+    renderPassFinal.draw(3, 1, 0, 0);
+    renderPassFinal.end();
+  }
 
   gpuDevice.queue.submit([commandEncoder.finish()]);
   return true;
@@ -681,6 +867,7 @@ export function cleanupWebGPU() {
   gpuUniformBuffer?.destroy();
   gpuBlurUniformBuffer?.destroy();
   gpuCompositeUniformBuffer?.destroy();
+  gpuGrainUniformBuffer?.destroy();
   gpuIntermediateTexture?.destroy();
   gpuIntermediateTexture2?.destroy();
   gpuIntermediateTexture3?.destroy();
@@ -697,6 +884,8 @@ export function cleanupWebGPU() {
   gpuBlurUniformBuffer = null;
   gpuCompositePipeline = null;
   gpuCompositeUniformBuffer = null;
+  gpuGrainPipeline = null;
+  gpuGrainUniformBuffer = null;
   gpuIntermediateTexture = null;
   gpuIntermediateTexture2 = null;
   gpuIntermediateTexture3 = null;

@@ -4,7 +4,7 @@ struct VertexOutput {
 };
 
 struct Uniforms {
-  // Adjustments (10 params)
+  // Adjustments (11 params)
   brightness: f32,
   contrast: f32,
   exposure: f32,
@@ -15,6 +15,7 @@ struct Uniforms {
   sepia: f32,
   grayscale: f32,
   vignette: f32,
+  grain: f32,
 
   // Viewport (4 params)
   viewportZoom: f32,
@@ -130,6 +131,13 @@ fn vs_main(@builtin(vertex_index) VertexIndex: u32) -> VertexOutput {
 // Helper functions
 fn getLuminance(color: vec3<f32>) -> f32 {
   return dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+}
+
+// Improved 2D hash function for better randomness
+fn hash2d(p: vec2<f32>) -> f32 {
+  let p3 = fract(vec3<f32>(p.x, p.y, p.x) * vec3<f32>(0.1031, 0.1030, 0.0973));
+  let dot_p3 = dot(p3, vec3<f32>(p3.y, p3.z, p3.x) + 33.33);
+  return fract((p3.x + p3.y) * p3.z + dot_p3);
 }
 
 fn rgbToHsl(rgb: vec3<f32>) -> vec3<f32> {

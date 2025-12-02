@@ -26,7 +26,9 @@
       temperature: 0,
       vignette: 0,
       sepia: 0,
-      grayscale: 0
+      grayscale: 0,
+      blur: 0,
+      grain: 0
     });
   }
 
@@ -170,6 +172,38 @@
         max="100"
         value={adjustments.vignette}
         oninput={(e) => handleChange('vignette', Number(e.currentTarget.value))}
+      />
+    </div>
+
+    <!-- Blur -->
+    <div class="adjustment-control">
+      <label for="blur">
+        <span>{$_('adjustments.blur')}</span>
+        <span class="value">{adjustments.blur}</span>
+      </label>
+      <input
+        id="blur"
+        type="range"
+        min="0"
+        max="100"
+        value={adjustments.blur}
+        oninput={(e) => handleChange('blur', Number(e.currentTarget.value))}
+      />
+    </div>
+
+    <!-- Film Grain -->
+    <div class="adjustment-control">
+      <label for="grain">
+        <span>{$_('adjustments.grain')}</span>
+        <span class="value">{adjustments.grain}</span>
+      </label>
+      <input
+        id="grain"
+        type="range"
+        min="0"
+        max="100"
+        value={adjustments.grain}
+        oninput={(e) => handleChange('grain', Number(e.currentTarget.value))}
       />
     </div>
   </div>

@@ -14,7 +14,9 @@ export function createDefaultAdjustments(): AdjustmentsState {
     temperature: 0,
     vignette: 0,
     sepia: 0,
-    grayscale: 0
+    grayscale: 0,
+    blur: 0,
+    grain: 0
   };
 }
 
@@ -121,7 +123,9 @@ export async function applyAllAdjustments(
     adjustments.temperature === 0 &&
     adjustments.vignette === 0 &&
     adjustments.sepia === 0 &&
-    adjustments.grayscale === 0
+    adjustments.grayscale === 0 &&
+    adjustments.blur === 0 &&
+    adjustments.grain === 0
   ) {
     return;
   }
@@ -172,6 +176,8 @@ function applyAllAdjustmentsCPU(
   const hasVignette = adjustments.vignette !== 0;
   const hasSepia = adjustments.sepia !== 0;
   const hasGrayscale = adjustments.grayscale !== 0;
+  const hasBlur = adjustments.blur > 0;
+  const hasGrain = adjustments.grain > 0;
 
   const exposureFactor = hasExposure ? Math.pow(2, adjustments.exposure / 100) : 1;
   const contrastFactor = hasContrast ? 1 + (adjustments.contrast / 200) : 1;
@@ -182,6 +188,7 @@ function applyAllAdjustmentsCPU(
   const temperatureFactor = adjustments.temperature / 100;
   const sepiaAmount = adjustments.sepia / 100;
   const grayscaleAmount = adjustments.grayscale / 100;
+  const grainAmount = hasGrain ? adjustments.grain / 100 : 0;
 
   // Vignette pre-calculations
   const imgWidth = cropArea ? cropArea.width : img.width;
@@ -271,6 +278,12 @@ function applyAllAdjustmentsCPU(
       [r, g, b] = hslToRgb(h, s, l);
     }
 
+    // Apply temperature
+    if (hasTemperature) {
+      r = r + temperatureFactor * 0.1 * 255;
+      b = b - temperatureFactor * 0.1 * 255;
+    }
+
     // Apply sepia
     if (hasSepia) {
       const tr = (0.393 * r + 0.769 * g + 0.189 * b);
@@ -307,13 +320,81 @@ function applyAllAdjustmentsCPU(
       b *= vignetteMultiplier;
     }
 
-    // Clamp final values to 0-255
+    // Clamp values before grain processing
     data[i] = Math.max(0, Math.min(255, r));
     data[i + 1] = Math.max(0, Math.min(255, g));
     data[i + 2] = Math.max(0, Math.min(255, b));
   }
 
+  // Put adjusted image data back to canvas
   ctx.putImageData(imageData, 0, 0);
+
+  // Apply Gaussian blur to entire image if blur adjustment is enabled
+  if (hasBlur) {
+    const blurAmount = adjustments.blur / 100;
+    // Map blur 0-100 to radius 0-10 (blur tool scale)
+    const blurRadius = blurAmount * 10.0 * totalScale;
+    if (blurRadius > 0.1) {
+      applyGaussianBlur(canvas, 0, 0, canvas.width, canvas.height, blurRadius);
+    }
+  }
+
+  // Apply film grain - Applied after blur for sharp grain on top
+  if (hasGrain) {
+    // Get image data after blur has been applied
+    const grainedData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const gData = grainedData.data;
+
+    // Helper function for hash
+    const hash2d = (x: number, y: number) => {
+      const p3x = (x * 0.1031) % 1;
+      const p3y = (y * 0.1030) % 1;
+      const p3z = (x * 0.0973) % 1;
+      const dotP3 = p3x * (p3y + 33.33) + p3y * (p3z + 33.33) + p3z * (p3x + 33.33);
+      return ((p3x + p3y) * p3z + dotP3) % 1;
+    };
+
+    for (let i = 0; i < gData.length; i += 4) {
+      let r = gData[i];
+      let g = gData[i + 1];
+      let b = gData[i + 2];
+
+      const pixelIndex = i / 4;
+      const canvasX = pixelIndex % canvas.width;
+      const canvasY = Math.floor(pixelIndex / canvas.width);
+
+      // Convert canvas coordinates to image coordinates
+      const imageX = ((canvasX - imageCenterX) / totalScale + imgWidth / 2);
+      const imageY = ((canvasY - imageCenterY) / totalScale + imgHeight / 2);
+
+      // Calculate luminance for grain masking
+      const luma = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+
+      // Grain visibility mask: most visible in midtones
+      let lumaMask = 1.0 - Math.abs(luma - 0.5) * 2.0;
+      lumaMask = Math.pow(lumaMask, 0.5); // Softer falloff
+
+      // Multi-scale grain for organic film look
+      const fineGrain = hash2d(Math.floor(imageX / 2.5), Math.floor(imageY / 2.5)) - 0.5;
+      const mediumGrain = hash2d(Math.floor(imageX / 5.5) + 123.45, Math.floor(imageY / 5.5) + 678.90) - 0.5;
+      const coarseGrain = hash2d(Math.floor(imageX / 9.0) + 345.67, Math.floor(imageY / 9.0) + 890.12) - 0.5;
+
+      // Combine grain layers
+      const grainNoise = fineGrain * 0.5 + mediumGrain * 0.3 + coarseGrain * 0.2;
+
+      // Strong grain intensity
+      const strength = lumaMask * grainAmount * 0.5 * 255;
+      r += grainNoise * strength;
+      g += grainNoise * strength;
+      b += grainNoise * strength;
+
+      gData[i] = Math.max(0, Math.min(255, r));
+      gData[i + 1] = Math.max(0, Math.min(255, g));
+      gData[i + 2] = Math.max(0, Math.min(255, b));
+    }
+
+    ctx.putImageData(grainedData, 0, 0);
+  }
 }
 
 /**
