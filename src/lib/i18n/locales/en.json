@@ -48,8 +48,10 @@
     "shadows": "Shadows",
     "brightness": "Brightness",
     "saturation": "Saturation",
-    "hue": "Hue",
-    "vignette": "Vignette"
+    "temperature": "Temperature",
+    "vignette": "Vignette",
+    "blur": "Blur",
+    "grain": "Grain"
   },
   "filters": {
     "vivid": "Vivid",
@@ -59,6 +61,15 @@
     "warm": "Warm",
     "cool": "Cool",
     "film": "Film",
+    "cinematic": "Cinematic",
+    "dramatic": "Dramatic",
+    "faded": "Faded",
+    "golden": "Golden Hour",
+    "soft": "Soft",
+    "moody": "Moody",
+    "pastel": "Pastel",
+    "bleach": "Bleach Bypass",
+    "grainy": "Grainy",
     "info": "Selecting a filter will override all current adjustments."
   },
   "blur": {

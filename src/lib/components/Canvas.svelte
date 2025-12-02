@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { drawImage, preloadStampImage } from '../utils/canvas';
+  import { onMount, onDestroy } from 'svelte';
+  import { drawImage, preloadStampImage, applyStamps } from '../utils/canvas';
+  import { initWebGPUCanvas, uploadImageToGPU, renderWithAdjustments, cleanupWebGPU, isWebGPUInitialized } from '../utils/webgpu-render';
   import type { Viewport, TransformState, CropArea, AdjustmentsState, BlurArea, StampArea } from '../types';
 
   interface Props {
@@ -15,6 +16,7 @@
     blurAreas?: BlurArea[];
     stampAreas?: StampArea[];
     onZoom?: (delta: number, centerX?: number, centerY?: number) => void;
+    onViewportChange?: (viewportUpdate: Partial<Viewport>) => void;
   }
 
   let {
@@ -28,30 +30,93 @@
     cropArea = null,
     blurAreas = [],
     stampAreas = [],
-    onZoom
+    onZoom,
+    onViewportChange
   }: Props = $props();
 
+  // Constants
+  const PAN_OVERFLOW_MARGIN = 0.2; // Allow 20% overflow when panning
+
+  // State
   let canvasElement = $state<HTMLCanvasElement | null>(null);
+  let overlayCanvasElement = $state<HTMLCanvasElement | null>(null);
+  let isInitializing = $state(true);  // Prevent 2D rendering before WebGPU check
+  let useWebGPU = $state(false);
+  let webgpuReady = $state(false);
+  let currentImage: HTMLImageElement | null = null;
+
+  // 2D Canvas fallback state
   let isPanning = $state(false);
   let lastPanPosition = $state({ x: 0, y: 0 });
-  let imageLoadCounter = $state(0); // Trigger redraw when images load
+  let imageLoadCounter = $state(0); // Incremented to trigger re-render when stamp images load
   let initialPinchDistance = $state(0);
   let initialZoom = $state(1);
   let renderRequested = $state(false);
   let pendingRenderFrame: number | null = null;
+  let needsAnotherRender = $state(false);
 
-  onMount(() => {
-    if (canvasElement) {
-      canvas = canvasElement;
+  // Helper functions
+  function ensureCanvasSize(canvas: HTMLCanvasElement, w: number, h: number): void {
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+  }
 
-      // Add touch event listeners with passive: false to allow preventDefault
-      canvasElement.addEventListener('touchstart', handleTouchStart, { passive: false });
-      canvasElement.addEventListener('touchmove', handleTouchMove, { passive: false });
-      canvasElement.addEventListener('touchend', handleTouchEnd, { passive: false });
+  function calculatePanOffset(
+    deltaX: number,
+    deltaY: number
+  ): { clampedOffsetX: number; clampedOffsetY: number } | null {
+    if (!image || !canvasElement) return null;
+
+    const imgWidth = cropArea ? cropArea.width : image.width;
+    const imgHeight = cropArea ? cropArea.height : image.height;
+    const totalScale = viewport.scale * viewport.zoom;
+    const scaledWidth = imgWidth * totalScale;
+    const scaledHeight = imgHeight * totalScale;
+
+    const maxOffsetX = (scaledWidth / 2) - (canvasElement.width / 2) + (canvasElement.width * PAN_OVERFLOW_MARGIN);
+    const maxOffsetY = (scaledHeight / 2) - (canvasElement.height / 2) + (canvasElement.height * PAN_OVERFLOW_MARGIN);
+
+    const newOffsetX = viewport.offsetX + deltaX;
+    const newOffsetY = viewport.offsetY + deltaY;
+
+    const clampedOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
+    const clampedOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+
+    return { clampedOffsetX, clampedOffsetY };
+  }
+
+  onMount(async () => {
+    if (!canvasElement) return;
+
+    canvas = canvasElement;
+
+    // Try WebGPU first
+    if (navigator.gpu) {
+      console.log('Attempting WebGPU initialization...');
+      const success = await initWebGPUCanvas(canvasElement);
+      if (success) {
+        useWebGPU = true;
+        webgpuReady = true;
+        console.log('✅ Using WebGPU rendering');
+      } else {
+        console.log('⚠️ WebGPU not available, using 2D Canvas fallback');
+        useWebGPU = false;
+      }
+    } else {
+      console.log('⚠️ WebGPU not available, using 2D Canvas fallback');
+      useWebGPU = false;
     }
 
+    isInitializing = false;
+
+    // Setup touch event listeners (common for both modes)
+    canvasElement.addEventListener('touchstart', handleTouchStart, { passive: false });
+    canvasElement.addEventListener('touchmove', handleTouchMove, { passive: false });
+    canvasElement.addEventListener('touchend', handleTouchEnd, { passive: false });
+
     return () => {
-      // Cleanup event listeners
       if (canvasElement) {
         canvasElement.removeEventListener('touchstart', handleTouchStart);
         canvasElement.removeEventListener('touchmove', handleTouchMove);
@@ -60,61 +125,59 @@
     };
   });
 
-  // Request a render using requestAnimationFrame
-  function requestRender() {
-    if (renderRequested) return;
-
-    renderRequested = true;
-    if (pendingRenderFrame !== null) {
-      cancelAnimationFrame(pendingRenderFrame);
+  onDestroy(() => {
+    if (useWebGPU) {
+      cleanupWebGPU();
     }
-
-    pendingRenderFrame = requestAnimationFrame(() => {
-      performRender();
-      renderRequested = false;
-      pendingRenderFrame = null;
-    });
-  }
-
-  // Perform the actual render
-  function performRender() {
-    if (!canvasElement || !image) return;
-
-    canvasElement.width = width;
-    canvasElement.height = height;
-
-    drawImage(
-      canvasElement,
-      image,
-      viewport,
-      transform,
-      adjustments,
-      cropArea,
-      blurAreas,
-      stampAreas
-    );
-  }
-
-  // Preload stamp images
-  $effect(() => {
-    if (!stampAreas) return;
-
-    stampAreas.forEach(stamp => {
-      if (stamp.stampType === 'image' || stamp.stampType === 'svg') {
-        preloadStampImage(stamp.stampContent).then(() => {
-          // Trigger redraw when image loads
-          imageLoadCounter++;
-        }).catch(console.error);
-      }
-    });
   });
 
-  // Draw canvas - use requestAnimationFrame for optimal performance
+  // WebGPU: Upload image when it changes
   $effect(() => {
-    if (canvasElement && image) {
+    if (useWebGPU && webgpuReady && image && image !== currentImage) {
+      currentImage = image;
+      uploadImageToGPU(image).then((success) => {
+        if (success) {
+          renderWebGPU();
+        }
+      });
+    }
+  });
+
+  // WebGPU: Render when parameters change
+  $effect(() => {
+    if (useWebGPU && webgpuReady && currentImage && canvasElement) {
+      renderWebGPU();
+    }
+    // Track object properties explicitly for reactivity
+    adjustments.brightness;
+    adjustments.contrast;
+    adjustments.saturation;
+    viewport.offsetX;
+    viewport.offsetY;
+    viewport.zoom;
+    viewport.scale;
+    transform.rotation;
+    transform.flipHorizontal;
+    transform.flipVertical;
+    transform.scale;
+    // Track cropArea object itself and its properties
+    cropArea;
+    cropArea?.x;
+    cropArea?.y;
+    cropArea?.width;
+    cropArea?.height;
+    blurAreas;
+    stampAreas;
+    width;
+    height;
+  });
+
+  // 2D Canvas: Render when parameters change
+  $effect(() => {
+    if (!isInitializing && !useWebGPU && canvasElement && image) {
       requestRender();
     }
-    // Include all dependencies
+    // Dependencies
     width;
     height;
     viewport;
@@ -126,8 +189,110 @@
     imageLoadCounter;
   });
 
+  // Preload stamp images
+  $effect(() => {
+    if (stampAreas) {
+      stampAreas.forEach(stamp => {
+        if (stamp.stampType === 'image' || stamp.stampType === 'svg') {
+          preloadStampImage(stamp.stampContent).then(() => {
+            if (!useWebGPU) {
+              imageLoadCounter++;
+            } else {
+              // Trigger re-render for WebGPU mode
+              renderWebGPU();
+            }
+          }).catch(console.error);
+        }
+      });
+    }
+  });
+
+  function renderWebGPU() {
+    if (!canvasElement || !webgpuReady || !currentImage) return;
+
+    ensureCanvasSize(canvasElement, width, height);
+
+    renderWithAdjustments(
+      adjustments,
+      viewport,
+      transform,
+      width,
+      height,
+      currentImage.width,
+      currentImage.height,
+      cropArea,
+      blurAreas
+    );
+
+    // Render stamps on overlay canvas
+    if (overlayCanvasElement && stampAreas.length > 0) {
+      ensureCanvasSize(overlayCanvasElement, width, height);
+
+      // Clear overlay canvas
+      const ctx = overlayCanvasElement.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, width, height);
+        applyStamps(overlayCanvasElement, currentImage, viewport, stampAreas, cropArea);
+      }
+    } else if (overlayCanvasElement) {
+      // Clear overlay if no stamps
+      const ctx = overlayCanvasElement.getContext('2d');
+      if (ctx) {
+        ctx.clearRect(0, 0, width, height);
+      }
+    }
+  }
+
+  // === 2D Canvas Fallback Implementation ===
+
+  function requestRender() {
+    if (renderRequested) {
+      needsAnotherRender = true;
+      return;
+    }
+
+    renderRequested = true;
+    needsAnotherRender = false;
+    if (pendingRenderFrame !== null) {
+      cancelAnimationFrame(pendingRenderFrame);
+    }
+
+    pendingRenderFrame = requestAnimationFrame(() => {
+      performRender()
+        .catch(error => {
+          console.error('Render error:', error);
+        })
+        .finally(() => {
+          renderRequested = false;
+          pendingRenderFrame = null;
+
+          if (needsAnotherRender) {
+            needsAnotherRender = false;
+            requestRender();
+          }
+        });
+    });
+  }
+
+  async function performRender() {
+    if (!canvasElement || !image) return;
+
+    canvasElement.width = width;
+    canvasElement.height = height;
+
+    await drawImage(
+      canvasElement,
+      image,
+      viewport,
+      transform,
+      adjustments,
+      cropArea,
+      blurAreas,
+      stampAreas
+    );
+  }
+
   function handleMouseDown(e: MouseEvent) {
-    // Left mouse button (0) or Middle mouse button (1) for panning
     if (e.button === 0 || e.button === 1) {
       isPanning = true;
       lastPanPosition = { x: e.clientX, y: e.clientY };
@@ -136,28 +301,14 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
-    if (isPanning && image && canvasElement) {
+    if (isPanning) {
       const deltaX = e.clientX - lastPanPosition.x;
       const deltaY = e.clientY - lastPanPosition.y;
 
-      // Calculate actual image dimensions after crop and scale
-      const imgWidth = cropArea ? cropArea.width : image.width;
-      const imgHeight = cropArea ? cropArea.height : image.height;
-      const totalScale = viewport.scale * viewport.zoom;
-      const scaledWidth = imgWidth * totalScale;
-      const scaledHeight = imgHeight * totalScale;
-
-      // Allow 20% overflow outside canvas
-      const overflowMargin = 0.2;
-      const maxOffsetX = (scaledWidth / 2) - (canvasElement.width / 2) + (canvasElement.width * overflowMargin);
-      const maxOffsetY = (scaledHeight / 2) - (canvasElement.height / 2) + (canvasElement.height * overflowMargin);
-
-      // Apply limits
-      const newOffsetX = viewport.offsetX + deltaX;
-      const newOffsetY = viewport.offsetY + deltaY;
-
-      viewport.offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
-      viewport.offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+      const result = calculatePanOffset(deltaX, deltaY);
+      if (result && onViewportChange) {
+        onViewportChange({ offsetX: result.clampedOffsetX, offsetY: result.clampedOffsetY });
+      }
 
       lastPanPosition = { x: e.clientX, y: e.clientY };
       e.preventDefault();
@@ -170,48 +321,30 @@
 
   function handleTouchStart(e: TouchEvent) {
     if (e.touches.length === 1) {
-      // Single finger panning
       isPanning = true;
       lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       e.preventDefault();
     } else if (e.touches.length === 2) {
-      // Pinch zoom - stop panning
       isPanning = false;
       e.preventDefault();
     }
   }
 
   function handleTouchMove(e: TouchEvent) {
-    if (e.touches.length === 1 && isPanning && image && canvasElement) {
-      // Single finger panning
+    if (e.touches.length === 1 && isPanning) {
       e.preventDefault();
 
       const touch = e.touches[0];
       const deltaX = touch.clientX - lastPanPosition.x;
       const deltaY = touch.clientY - lastPanPosition.y;
 
-      // Calculate actual image dimensions after crop and scale
-      const imgWidth = cropArea ? cropArea.width : image.width;
-      const imgHeight = cropArea ? cropArea.height : image.height;
-      const totalScale = viewport.scale * viewport.zoom;
-      const scaledWidth = imgWidth * totalScale;
-      const scaledHeight = imgHeight * totalScale;
-
-      // Allow 20% overflow outside canvas
-      const overflowMargin = 0.2;
-      const maxOffsetX = (scaledWidth / 2) - (canvasElement.width / 2) + (canvasElement.width * overflowMargin);
-      const maxOffsetY = (scaledHeight / 2) - (canvasElement.height / 2) + (canvasElement.height * overflowMargin);
-
-      // Apply limits
-      const newOffsetX = viewport.offsetX + deltaX;
-      const newOffsetY = viewport.offsetY + deltaY;
-
-      viewport.offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
-      viewport.offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+      const result = calculatePanOffset(deltaX, deltaY);
+      if (result && onViewportChange) {
+        onViewportChange({ offsetX: result.clampedOffsetX, offsetY: result.clampedOffsetY });
+      }
 
       lastPanPosition = { x: touch.clientX, y: touch.clientY };
     } else if (e.touches.length === 2) {
-      // Pinch zoom
       e.preventDefault();
 
       const touch1 = e.touches[0];
@@ -245,7 +378,6 @@
       isPanning = false;
       initialPinchDistance = 0;
     } else if (e.touches.length === 1) {
-      // Switched from pinch to pan
       initialPinchDistance = 0;
       isPanning = true;
       lastPanPosition = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -258,17 +390,40 @@
   onmouseup={handleMouseUp}
 />
 
-<canvas
-  bind:this={canvasElement}
-  width={width}
-  height={height}
-  class="editor-canvas"
-  class:panning={isPanning}
-  style="max-width: 100%; max-height: {height}px;"
-  onmousedown={handleMouseDown}
-></canvas>
+<div class="canvas-container">
+  <canvas
+    bind:this={canvasElement}
+    width={width}
+    height={height}
+    class="editor-canvas"
+    class:panning={isPanning}
+    style="max-width: 100%; max-height: {height}px;"
+    onmousedown={handleMouseDown}
+  ></canvas>
+
+  {#if useWebGPU}
+    <canvas
+      bind:this={overlayCanvasElement}
+      width={width}
+      height={height}
+      class="overlay-canvas"
+      style="max-width: 100%; max-height: {height}px; pointer-events: none;"
+    ></canvas>
+  {/if}
+
+  {#if useWebGPU && webgpuReady}
+    <div class="gpu-indicator">
+      <span class="gpu-badge">WebGPU</span>
+    </div>
+  {/if}
+</div>
 
 <style lang="postcss">
+  .canvas-container {
+    position: relative;
+    display: inline-block;
+  }
+
   .editor-canvas {
     display: block;
     background: #000;
@@ -280,5 +435,34 @@
 
   .editor-canvas.panning {
     cursor: grabbing;
+  }
+
+  .overlay-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: block;
+    pointer-events: none;
+  }
+
+  .gpu-indicator {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .gpu-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+    text-transform: uppercase;
   }
 </style>

@@ -48,8 +48,10 @@
     "shadows": "シャドウ",
     "brightness": "明るさ",
     "saturation": "彩度",
-    "hue": "色合い",
-    "vignette": "周辺光量補正"
+    "temperature": "色温度",
+    "vignette": "周辺光量補正",
+    "blur": "ぼかし",
+    "grain": "粒子"
   },
   "filters": {
     "vivid": "ビビッド",
@@ -59,6 +61,15 @@
     "warm": "ウォーム",
     "cool": "クール",
     "film": "フィルム",
+    "cinematic": "シネマティック",
+    "dramatic": "ドラマティック",
+    "faded": "フェード",
+    "golden": "ゴールデンアワー",
+    "soft": "ソフト",
+    "moody": "ムーディー",
+    "pastel": "パステル",
+    "bleach": "ブリーチバイパス",
+    "grainy": "粒子",
     "info": "フィルターを選択すると、すべての調整値が上書きされます。"
   },
   "blur": {

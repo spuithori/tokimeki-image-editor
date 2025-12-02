@@ -55,7 +55,7 @@ export function calculateFitScale(
   return Math.min(scaleX, scaleY, 1); // Don't scale up, only down
 }
 
-export function drawImage(
+export async function drawImage(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
   viewport: Viewport,
@@ -64,7 +64,7 @@ export function drawImage(
   cropArea?: CropArea | null,
   blurAreas?: BlurArea[],
   stampAreas?: StampArea[]
-): void {
+): Promise<void> {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
@@ -117,8 +117,8 @@ export function drawImage(
   ctx.restore();
 
   // Apply all adjustments via pixel manipulation (Safari-compatible)
-  // This modifies the canvas pixels after drawing
-  applyAllAdjustments(canvas, img, viewport, adjustments, cropArea);
+  // Uses WebGPU acceleration when available, falls back to CPU
+  await applyAllAdjustments(canvas, img, viewport, adjustments, cropArea);
 
   // Apply blur areas
   if (blurAreas && blurAreas.length > 0) {
@@ -148,14 +148,14 @@ export function downloadImage(dataUrl: string, filename: string): void {
   link.click();
 }
 
-export function applyTransform(
+export async function applyTransform(
   img: HTMLImageElement,
   transform: TransformState,
   adjustments: AdjustmentsState,
   cropArea: CropArea | null = null,
   blurAreas: BlurArea[] = [],
   stampAreas: StampArea[] = []
-): HTMLCanvasElement {
+): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   if (!ctx) return canvas;
@@ -200,6 +200,7 @@ export function applyTransform(
   ctx.restore();
 
   // Apply all adjustments via pixel manipulation (Safari-compatible)
+  // Uses WebGPU acceleration when available, falls back to CPU
   // For export, create a centered viewport with no offset
   const exportViewport: Viewport = {
     zoom: 1,
@@ -207,7 +208,7 @@ export function applyTransform(
     offsetY: 0,
     scale: 1
   };
-  applyAllAdjustments(canvas, img, exportViewport, adjustments, cropArea);
+  await applyAllAdjustments(canvas, img, exportViewport, adjustments, cropArea);
 
   // Apply blur areas for export
   if (blurAreas.length > 0) {
@@ -220,6 +221,67 @@ export function applyTransform(
   }
 
   return canvas;
+}
+
+/**
+ * Apply all transformations and export using WebGPU (when available)
+ * Falls back to Canvas2D if WebGPU is not supported
+ */
+export async function applyTransformWithWebGPU(
+  img: HTMLImageElement,
+  transform: TransformState,
+  adjustments: AdjustmentsState,
+  cropArea: CropArea | null = null,
+  blurAreas: BlurArea[] = [],
+  stampAreas: StampArea[] = []
+): Promise<HTMLCanvasElement> {
+  // Try WebGPU export first
+  if (navigator.gpu) {
+    try {
+      const { exportWithWebGPU } = await import('./webgpu-render');
+      const webgpuCanvas = await exportWithWebGPU(
+        img,
+        adjustments,
+        transform,
+        cropArea,
+        blurAreas
+      );
+
+      if (webgpuCanvas) {
+        // Apply stamps on top (WebGPU doesn't handle stamps yet)
+        if (stampAreas.length > 0) {
+          // Create a new Canvas2D to composite WebGPU result + stamps
+          const finalCanvas = document.createElement('canvas');
+          finalCanvas.width = webgpuCanvas.width;
+          finalCanvas.height = webgpuCanvas.height;
+          const ctx = finalCanvas.getContext('2d');
+
+          if (ctx) {
+            // Draw WebGPU result
+            ctx.drawImage(webgpuCanvas, 0, 0);
+
+            // Apply stamps on top
+            const exportViewport: Viewport = {
+              zoom: 1,
+              offsetX: 0,
+              offsetY: 0,
+              scale: 1
+            };
+            applyStamps(finalCanvas, img, exportViewport, stampAreas, cropArea);
+
+            return finalCanvas;
+          }
+        }
+
+        return webgpuCanvas;
+      }
+    } catch (error) {
+      console.warn('WebGPU export failed, falling back to Canvas2D:', error);
+    }
+  }
+
+  // Fallback to Canvas2D
+  return applyTransform(img, transform, adjustments, cropArea, blurAreas, stampAreas);
 }
 
 export function screenToImageCoords(

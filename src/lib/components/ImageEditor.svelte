@@ -3,7 +3,7 @@
   import { _ } from 'svelte-i18n';
   import { Redo2, RotateCcw, Undo2 } from 'lucide-svelte';
   import type { EditorMode, EditorState, CropArea, TransformState, Viewport, AdjustmentsState, BlurArea } from '../types';
-  import { loadImage, calculateFitScale, exportCanvas, downloadImage, applyTransform } from '../utils/canvas';
+  import { loadImage, calculateFitScale, exportCanvas, downloadImage, applyTransform, applyTransformWithWebGPU } from '../utils/canvas';
   import { createEmptyHistory, createSnapshot, addToHistory, undo, redo, canUndo, canRedo } from '../utils/history';
   import { createDefaultAdjustments } from '../utils/adjustments';
   import Toolbar from './Toolbar.svelte';
@@ -250,10 +250,11 @@
     saveToHistory();
   }
 
-  function handleExport() {
+  async function handleExport() {
     if (!state.imageData.original) return;
 
-    const exportCanvas = applyTransform(
+    // Use WebGPU for export when available
+    const exportCanvas = await applyTransformWithWebGPU(
       state.imageData.original,
       state.transform,
       state.adjustments,
@@ -275,10 +276,11 @@
     }
   }
 
-  function handleComplete() {
+  async function handleComplete() {
     if (!state.imageData.original || !onComplete) return;
 
-    const exportCanvas = applyTransform(
+    // Use WebGPU for export when available
+    const exportCanvas = await applyTransformWithWebGPU(
       state.imageData.original,
       state.transform,
       state.adjustments,
@@ -514,6 +516,7 @@
           blurAreas={state.blurAreas}
           stampAreas={state.stampAreas}
           onZoom={handleZoom}
+          onViewportChange={handleViewportChange}
         />
 
         {#if state.mode === 'crop'}
