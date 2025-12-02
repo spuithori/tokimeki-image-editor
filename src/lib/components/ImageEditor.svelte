@@ -3,7 +3,7 @@
   import { _ } from 'svelte-i18n';
   import { Redo2, RotateCcw, Undo2 } from 'lucide-svelte';
   import type { EditorMode, EditorState, CropArea, TransformState, Viewport, AdjustmentsState, BlurArea } from '../types';
-  import { loadImage, calculateFitScale, exportCanvas, downloadImage, applyTransform } from '../utils/canvas';
+  import { loadImage, calculateFitScale, exportCanvas, downloadImage, applyTransform, applyTransformWithWebGPU } from '../utils/canvas';
   import { createEmptyHistory, createSnapshot, addToHistory, undo, redo, canUndo, canRedo } from '../utils/history';
   import { createDefaultAdjustments } from '../utils/adjustments';
   import Toolbar from './Toolbar.svelte';
@@ -253,7 +253,8 @@
   async function handleExport() {
     if (!state.imageData.original) return;
 
-    const exportCanvas = await applyTransform(
+    // Use WebGPU for export when available
+    const exportCanvas = await applyTransformWithWebGPU(
       state.imageData.original,
       state.transform,
       state.adjustments,
@@ -278,7 +279,8 @@
   async function handleComplete() {
     if (!state.imageData.original || !onComplete) return;
 
-    const exportCanvas = await applyTransform(
+    // Use WebGPU for export when available
+    const exportCanvas = await applyTransformWithWebGPU(
       state.imageData.original,
       state.transform,
       state.adjustments,

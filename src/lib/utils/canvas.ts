@@ -223,6 +223,67 @@ export async function applyTransform(
   return canvas;
 }
 
+/**
+ * Apply all transformations and export using WebGPU (when available)
+ * Falls back to Canvas2D if WebGPU is not supported
+ */
+export async function applyTransformWithWebGPU(
+  img: HTMLImageElement,
+  transform: TransformState,
+  adjustments: AdjustmentsState,
+  cropArea: CropArea | null = null,
+  blurAreas: BlurArea[] = [],
+  stampAreas: StampArea[] = []
+): Promise<HTMLCanvasElement> {
+  // Try WebGPU export first
+  if (navigator.gpu) {
+    try {
+      const { exportWithWebGPU } = await import('./webgpu-render');
+      const webgpuCanvas = await exportWithWebGPU(
+        img,
+        adjustments,
+        transform,
+        cropArea,
+        blurAreas
+      );
+
+      if (webgpuCanvas) {
+        // Apply stamps on top (WebGPU doesn't handle stamps yet)
+        if (stampAreas.length > 0) {
+          // Create a new Canvas2D to composite WebGPU result + stamps
+          const finalCanvas = document.createElement('canvas');
+          finalCanvas.width = webgpuCanvas.width;
+          finalCanvas.height = webgpuCanvas.height;
+          const ctx = finalCanvas.getContext('2d');
+
+          if (ctx) {
+            // Draw WebGPU result
+            ctx.drawImage(webgpuCanvas, 0, 0);
+
+            // Apply stamps on top
+            const exportViewport: Viewport = {
+              zoom: 1,
+              offsetX: 0,
+              offsetY: 0,
+              scale: 1
+            };
+            applyStamps(finalCanvas, img, exportViewport, stampAreas, cropArea);
+
+            return finalCanvas;
+          }
+        }
+
+        return webgpuCanvas;
+      }
+    } catch (error) {
+      console.warn('WebGPU export failed, falling back to Canvas2D:', error);
+    }
+  }
+
+  // Fallback to Canvas2D
+  return applyTransform(img, transform, adjustments, cropArea, blurAreas, stampAreas);
+}
+
 export function screenToImageCoords(
   screenX: number,
   screenY: number,

@@ -608,7 +608,9 @@ function renderWithBlur(
   for (const blurArea of blurAreas) {
     if (blurArea.blurStrength <= 0) continue;
 
-    const blurRadius = Math.min(Math.ceil((blurArea.blurStrength / 100) * 50), 50);
+    // Calculate blur radius to match Canvas2D behavior
+    const imageBlurPx = (blurArea.blurStrength / 100) * 100;
+    const blurRadius = Math.ceil(imageBlurPx * totalScale);
 
     // Blur areas are in IMAGE space, need to convert to canvas space, then to UV
     // Following the same logic as 2D canvas implementation
@@ -857,6 +859,528 @@ function renderWithBlur(
  */
 export function isWebGPUInitialized(): boolean {
   return gpuDevice !== null && gpuContext !== null && gpuPipeline !== null;
+}
+
+/**
+ * Export image using WebGPU rendering at full resolution
+ * Creates an offscreen canvas and renders the final image with all adjustments
+ */
+export async function exportWithWebGPU(
+  imageSource: HTMLImageElement | ImageBitmap,
+  adjustments: AdjustmentsState,
+  transform: TransformState,
+  cropArea: CropArea | null = null,
+  blurAreas: BlurArea[] = []
+): Promise<HTMLCanvasElement | null> {
+  try {
+    // Get adapter and device
+    if (!navigator.gpu) {
+      console.warn('WebGPU not supported for export');
+      return null;
+    }
+
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      console.warn('No WebGPU adapter for export');
+      return null;
+    }
+
+    const device = await adapter.requestDevice();
+    const format = navigator.gpu.getPreferredCanvasFormat();
+
+    // Calculate output dimensions based on crop and rotation
+    const sourceWidth = cropArea ? cropArea.width : imageSource.width;
+    const sourceHeight = cropArea ? cropArea.height : imageSource.height;
+    const needsSwap = transform.rotation === 90 || transform.rotation === 270;
+    const outputWidth = needsSwap ? sourceHeight : sourceWidth;
+    const outputHeight = needsSwap ? sourceWidth : sourceHeight;
+
+    // Create offscreen canvas at full resolution
+    const canvas = document.createElement('canvas');
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+
+    const context = canvas.getContext('webgpu') as GPUCanvasContext;
+    if (!context) {
+      console.warn('Failed to get WebGPU context for export');
+      return null;
+    }
+
+    context.configure({ device, format, alphaMode: 'premultiplied' });
+
+    // Upload image as texture
+    const bitmap = imageSource instanceof ImageBitmap
+      ? imageSource
+      : await createImageBitmap(imageSource);
+
+    const texture = device.createTexture({
+      size: [bitmap.width, bitmap.height, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+
+    device.queue.copyExternalImageToTexture(
+      { source: bitmap },
+      { texture },
+      [bitmap.width, bitmap.height]
+    );
+
+    // Create sampler
+    const sampler = device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
+
+    // Create pipelines
+    const mainShaderModule = device.createShaderModule({ code: SHADER_CODE });
+    const mainPipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: mainShaderModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: mainShaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: 'rgba8unorm' }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    const blurShaderModule = device.createShaderModule({ code: BLUR_SHADER_CODE });
+    const blurPipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: blurShaderModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: blurShaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: 'rgba8unorm' }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    const grainShaderModule = device.createShaderModule({ code: GRAIN_SHADER_CODE });
+    const grainPipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: grainShaderModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: grainShaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    const compositeShaderModule = device.createShaderModule({ code: COMPOSITE_SHADER_CODE });
+    const compositePipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: compositeShaderModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: compositeShaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format: 'rgba8unorm' }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    // Create uniform buffers
+    const mainUniformBuffer = device.createBuffer({
+      size: 128,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    const blurUniformBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    const grainUniformBuffer = device.createBuffer({
+      size: 80,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Create intermediate textures
+    const intermediate1 = device.createTexture({
+      size: [outputWidth, outputHeight, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    const intermediate2 = device.createTexture({
+      size: [outputWidth, outputHeight, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    const intermediate3 = device.createTexture({
+      size: [outputWidth, outputHeight, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    const intermediate4 = device.createTexture({
+      size: [outputWidth, outputHeight, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+
+    // Setup viewport and transform for export (no zoom/pan, centered)
+    const viewport: Viewport = {
+      zoom: 1.0,
+      offsetX: 0,
+      offsetY: 0,
+      scale: 1.0,
+    };
+
+    // Prepare uniforms (grain=0 for main pass)
+    const rotationRad = (transform.rotation * Math.PI) / 180;
+    const uniformData = new Float32Array([
+      // Adjustments (11 floats) - grain set to 0
+      adjustments.brightness, adjustments.contrast, adjustments.exposure,
+      adjustments.highlights, adjustments.shadows, adjustments.saturation,
+      adjustments.temperature, adjustments.sepia, adjustments.grayscale,
+      adjustments.vignette, 0, // grain = 0
+      // Viewport (4 floats)
+      viewport.zoom, viewport.offsetX, viewport.offsetY, viewport.scale,
+      // Transform (4 floats)
+      rotationRad,
+      transform.flipHorizontal ? -1.0 : 1.0,
+      transform.flipVertical ? -1.0 : 1.0,
+      transform.scale,
+      // Canvas dimensions (2 floats)
+      outputWidth, outputHeight,
+      // Image dimensions (2 floats)
+      bitmap.width, bitmap.height,
+      // Crop area (4 floats)
+      cropArea?.x ?? 0, cropArea?.y ?? 0,
+      cropArea?.width ?? 0, cropArea?.height ?? 0,
+      // Padding
+      0, 0, 0, 0, 0
+    ]);
+    device.queue.writeBuffer(mainUniformBuffer, 0, uniformData);
+
+    // Create bind group for main pass
+    const mainBindGroup = device.createBindGroup({
+      layout: mainPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: sampler },
+        { binding: 1, resource: texture.createView() },
+        { binding: 2, resource: { buffer: mainUniformBuffer } },
+      ],
+    });
+
+    // Pass 1: Render with adjustments
+    let commandEncoder = device.createCommandEncoder();
+    const renderPass1 = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediate1.createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+    renderPass1.setPipeline(mainPipeline);
+    renderPass1.setBindGroup(0, mainBindGroup);
+    renderPass1.draw(3, 1, 0, 0);
+    renderPass1.end();
+    device.queue.submit([commandEncoder.finish()]);
+
+    // Pass 2: Copy to accumulator
+    commandEncoder = device.createCommandEncoder();
+    device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
+    const copyBindGroup = device.createBindGroup({
+      layout: blurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: sampler },
+        { binding: 1, resource: intermediate1.createView() },
+        { binding: 2, resource: { buffer: blurUniformBuffer } },
+      ],
+    });
+    const copyPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediate4.createView(),
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+    copyPass.setPipeline(blurPipeline);
+    copyPass.setBindGroup(0, copyBindGroup);
+    copyPass.draw(3, 1, 0, 0);
+    copyPass.end();
+    device.queue.submit([commandEncoder.finish()]);
+
+    // Pass 3a: Apply global blur if needed
+    if (adjustments.blur > 0) {
+      const globalBlurRadius = Math.ceil((adjustments.blur / 100) * 10);
+
+      // Horizontal pass
+      commandEncoder = device.createCommandEncoder();
+      const blurUniformsH = new Float32Array([1.0, 0.0, globalBlurRadius, 0.0]);
+      device.queue.writeBuffer(blurUniformBuffer, 0, blurUniformsH);
+      const blurBindGroupH = device.createBindGroup({
+        layout: blurPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate4.createView() },
+          { binding: 2, resource: { buffer: blurUniformBuffer } },
+        ],
+      });
+      const blurPassH = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+          view: intermediate2.createView(),
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      blurPassH.setPipeline(blurPipeline);
+      blurPassH.setBindGroup(0, blurBindGroupH);
+      blurPassH.draw(3, 1, 0, 0);
+      blurPassH.end();
+      device.queue.submit([commandEncoder.finish()]);
+
+      // Vertical pass
+      commandEncoder = device.createCommandEncoder();
+      const blurUniformsV = new Float32Array([0.0, 1.0, globalBlurRadius, 0.0]);
+      device.queue.writeBuffer(blurUniformBuffer, 0, blurUniformsV);
+      const blurBindGroupV = device.createBindGroup({
+        layout: blurPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate2.createView() },
+          { binding: 2, resource: { buffer: blurUniformBuffer } },
+        ],
+      });
+      const blurPassV = commandEncoder.beginRenderPass({
+        colorAttachments: [{
+          view: intermediate4.createView(),
+          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          loadOp: 'clear',
+          storeOp: 'store',
+        }],
+      });
+      blurPassV.setPipeline(blurPipeline);
+      blurPassV.setBindGroup(0, blurBindGroupV);
+      blurPassV.draw(3, 1, 0, 0);
+      blurPassV.end();
+      device.queue.submit([commandEncoder.finish()]);
+    }
+
+    // Pass 3b: Apply regional blur areas
+    if (blurAreas.length > 0) {
+      // Create composite uniform buffer for blur area compositing
+      const compositeUniformBuffer = device.createBuffer({
+        size: 16,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+
+      // For export, we use a centered viewport with no zoom/pan
+      // Image is rendered at full resolution, centered
+      const totalScale = viewport.scale * viewport.zoom * transform.scale; // All 1.0 for export
+      const centerX = outputWidth / 2;
+      const centerY = outputHeight / 2;
+
+      // Determine source dimensions based on crop
+      const sourceWidth = cropArea ? cropArea.width : bitmap.width;
+      const sourceHeight = cropArea ? cropArea.height : bitmap.height;
+      const cropOffsetX = cropArea ? cropArea.x : 0;
+      const cropOffsetY = cropArea ? cropArea.y : 0;
+
+      for (const blurArea of blurAreas) {
+        if (blurArea.blurStrength <= 0) continue;
+
+        // Calculate blur radius to match Canvas2D behavior
+        // For export, totalScale = 1.0, so blur is in image pixels
+        const imageBlurPx = (blurArea.blurStrength / 100) * 100;
+        const blurRadius = Math.ceil(imageBlurPx * totalScale);
+
+        // Convert blur area from image space to canvas space, then to UV coordinates
+        // 1. Convert to crop-relative coordinates
+        const relativeX = blurArea.x - cropOffsetX;
+        const relativeY = blurArea.y - cropOffsetY;
+
+        // 2. Transform from image space to canvas space
+        // For export: viewport offset = 0, zoom = 1, scale = 1
+        const canvasBlurX = (relativeX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX;
+        const canvasBlurY = (relativeY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY;
+        const canvasBlurWidth = blurArea.width * totalScale;
+        const canvasBlurHeight = blurArea.height * totalScale;
+
+        // 3. Convert to normalized UV coordinates (0-1)
+        const minX = clamp(canvasBlurX / outputWidth, 0, 1);
+        const minY = clamp(canvasBlurY / outputHeight, 0, 1);
+        const maxX = clamp((canvasBlurX + canvasBlurWidth) / outputWidth, 0, 1);
+        const maxY = clamp((canvasBlurY + canvasBlurHeight) / outputHeight, 0, 1);
+
+        // Horizontal blur: intermediate1 (base) -> intermediate2
+        commandEncoder = device.createCommandEncoder();
+        const blurUniformsH = new Float32Array([1.0, 0.0, blurRadius, 0.0]);
+        device.queue.writeBuffer(blurUniformBuffer, 0, blurUniformsH);
+        const blurBindGroupH = device.createBindGroup({
+          layout: blurPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: sampler },
+            { binding: 1, resource: intermediate1.createView() },
+            { binding: 2, resource: { buffer: blurUniformBuffer } },
+          ],
+        });
+        const blurPassH = commandEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: intermediate2.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        blurPassH.setPipeline(blurPipeline);
+        blurPassH.setBindGroup(0, blurBindGroupH);
+        blurPassH.draw(3, 1, 0, 0);
+        blurPassH.end();
+        device.queue.submit([commandEncoder.finish()]);
+
+        // Vertical blur: intermediate2 -> intermediate3
+        commandEncoder = device.createCommandEncoder();
+        const blurUniformsV = new Float32Array([0.0, 1.0, blurRadius, 0.0]);
+        device.queue.writeBuffer(blurUniformBuffer, 0, blurUniformsV);
+        const blurBindGroupV = device.createBindGroup({
+          layout: blurPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: sampler },
+            { binding: 1, resource: intermediate2.createView() },
+            { binding: 2, resource: { buffer: blurUniformBuffer } },
+          ],
+        });
+        const blurPassV = commandEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: intermediate3.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        blurPassV.setPipeline(blurPipeline);
+        blurPassV.setBindGroup(0, blurBindGroupV);
+        blurPassV.draw(3, 1, 0, 0);
+        blurPassV.end();
+        device.queue.submit([commandEncoder.finish()]);
+
+        // Composite: blend intermediate3 (blurred region) with intermediate4 (accumulator)
+        commandEncoder = device.createCommandEncoder();
+        const compositeUniforms = new Float32Array([minX, minY, maxX, maxY]);
+        device.queue.writeBuffer(compositeUniformBuffer, 0, compositeUniforms);
+        const compositeBindGroup = device.createBindGroup({
+          layout: compositePipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: sampler },
+            { binding: 1, resource: intermediate3.createView() }, // blurred
+            { binding: 2, resource: intermediate4.createView() }, // accumulator
+            { binding: 3, resource: { buffer: compositeUniformBuffer } },
+          ],
+        });
+        const compositePass = commandEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: intermediate2.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        compositePass.setPipeline(compositePipeline);
+        compositePass.setBindGroup(0, compositeBindGroup);
+        compositePass.draw(3, 1, 0, 0);
+        compositePass.end();
+        device.queue.submit([commandEncoder.finish()]);
+
+        // Copy back to accumulator: intermediate2 -> intermediate4
+        commandEncoder = device.createCommandEncoder();
+        device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
+        const copyBackBindGroup = device.createBindGroup({
+          layout: blurPipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: sampler },
+            { binding: 1, resource: intermediate2.createView() },
+            { binding: 2, resource: { buffer: blurUniformBuffer } },
+          ],
+        });
+        const copyBackPass = commandEncoder.beginRenderPass({
+          colorAttachments: [{
+            view: intermediate4.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            loadOp: 'clear',
+            storeOp: 'store',
+          }],
+        });
+        copyBackPass.setPipeline(blurPipeline);
+        copyBackPass.setBindGroup(0, copyBackBindGroup);
+        copyBackPass.draw(3, 1, 0, 0);
+        copyBackPass.end();
+        device.queue.submit([commandEncoder.finish()]);
+      }
+
+      // Cleanup composite buffer
+      compositeUniformBuffer.destroy();
+    }
+
+    // Pass 4: Apply grain or copy to canvas
+    // Note: Always use grain pipeline to render to canvas because it has the correct format
+    // When grain is 0, the grain shader will just pass through the image
+    commandEncoder = device.createCommandEncoder();
+    const canvasView = context.getCurrentTexture().createView();
+
+    const grainUniforms = new Float32Array([
+      adjustments.grain, // Use actual grain value (0 if no grain)
+      viewport.zoom, viewport.offsetX, viewport.offsetY, viewport.scale,
+      rotationRad,
+      transform.flipHorizontal ? -1.0 : 1.0,
+      transform.flipVertical ? -1.0 : 1.0,
+      transform.scale,
+      outputWidth, outputHeight,
+      bitmap.width, bitmap.height,
+      cropArea?.x ?? 0, cropArea?.y ?? 0,
+      cropArea?.width ?? 0, cropArea?.height ?? 0,
+      0, 0, 0
+    ]);
+    device.queue.writeBuffer(grainUniformBuffer, 0, grainUniforms);
+
+    const grainBindGroup = device.createBindGroup({
+      layout: grainPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: sampler },
+        { binding: 1, resource: intermediate4.createView() },
+        { binding: 2, resource: { buffer: grainUniformBuffer } },
+      ],
+    });
+
+    const grainPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: canvasView,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+    grainPass.setPipeline(grainPipeline);
+    grainPass.setBindGroup(0, grainBindGroup);
+    grainPass.draw(3, 1, 0, 0);
+    grainPass.end();
+
+    device.queue.submit([commandEncoder.finish()]);
+
+    // Wait for rendering to complete
+    await device.queue.onSubmittedWorkDone();
+
+    // Cleanup
+    texture.destroy();
+    intermediate1.destroy();
+    intermediate2.destroy();
+    intermediate3.destroy();
+    intermediate4.destroy();
+    mainUniformBuffer.destroy();
+    blurUniformBuffer.destroy();
+    grainUniformBuffer.destroy();
+
+    return canvas;
+  } catch (error) {
+    console.error('Failed to export with WebGPU:', error);
+    return null;
+  }
 }
 
 /**
