@@ -514,6 +514,7 @@
           blurAreas={state.blurAreas}
           stampAreas={state.stampAreas}
           onZoom={handleZoom}
+          onViewportChange={handleViewportChange}
         />
 
         {#if state.mode === 'crop'}

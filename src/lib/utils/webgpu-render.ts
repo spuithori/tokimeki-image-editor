@@ -100,35 +100,38 @@ fn vs_main(@builtin(vertex_index) VertexIndex: u32) -> VertexOutput {
 
   // 5. Convert to texture coordinates
   // After inverse transformations, coord is in drawing space (centered at origin)
-  // The viewport scale is adjusted to fit either the full image or crop area
 
-  var imgWidth = params.imageWidth;
-  var imgHeight = params.imageHeight;
-  var texOffsetX = 0.0;
-  var texOffsetY = 0.0;
+  // When there's a crop, viewport.scale is adjusted to fit crop area to canvas
+  // This means coord values are scaled according to crop dimensions
+  // We need to account for this when mapping to texture coordinates
 
+  // ALWAYS use crop-aware logic
   if (params.cropWidth > 0.0 && params.cropHeight > 0.0) {
-    // When cropped, the viewport.scale has been adjusted to fit the crop area
-    // So coord is already in crop-centered space (units: crop pixels)
-    imgWidth = params.cropWidth;
-    imgHeight = params.cropHeight;
-    texOffsetX = params.cropX / params.imageWidth;
-    texOffsetY = params.cropY / params.imageHeight;
+    // coord is in crop-centered space (units: pixels in crop area after inverse transforms)
+    // The 2D canvas draws: drawImage(img, cropX, cropY, cropW, cropH, -cropW/2, -cropH/2, cropW, cropH)
+    // This means the crop region is drawn centered, from (-cropW/2, -cropH/2) to (cropW/2, cropH/2)
+
+    // Map from drawing space to texture coordinates:
+    // Drawing space: coord ranges from (-cropW/2, -cropH/2) to (cropW/2, cropH/2)
+    // Texture space: we want to read from (cropX, cropY) to (cropX+cropW, cropY+cropH)
+
+    // Convert from centered coordinates to 0-based coordinates within crop region
+    let cropLocalX = coord.x + params.cropWidth * 0.5;
+    let cropLocalY = coord.y + params.cropHeight * 0.5;
+
+    // Convert to texture coordinates by adding crop offset and normalizing by image size
+    output.uv = vec2<f32>(
+      (params.cropX + cropLocalX) / params.imageWidth,
+      (params.cropY + cropLocalY) / params.imageHeight
+    );
+  } else {
+    // No crop - standard transformation
+    // Convert from image-centered space to top-left origin
+    coord = coord + vec2<f32>(params.imageWidth * 0.5, params.imageHeight * 0.5);
+
+    // Normalize to 0-1 range
+    output.uv = coord / vec2<f32>(params.imageWidth, params.imageHeight);
   }
-
-  // Convert from centered space to top-left origin
-  coord = coord + vec2<f32>(imgWidth * 0.5, imgHeight * 0.5);
-
-  // Normalize to 0-1 range
-  var texCoord = coord / vec2<f32>(imgWidth, imgHeight);
-
-  // When cropped, map to the crop region in the texture
-  if (params.cropWidth > 0.0 && params.cropHeight > 0.0) {
-    texCoord = texCoord * vec2<f32>(params.cropWidth / params.imageWidth, params.cropHeight / params.imageHeight);
-    texCoord = texCoord + vec2<f32>(texOffsetX, texOffsetY);
-  }
-
-  output.uv = texCoord;
 
   return output;
 }
@@ -196,13 +199,26 @@ fn hue2rgb(p: f32, q: f32, t_: f32) -> f32 {
 
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
-  // Sample texture first (must be in uniform control flow)
+  // Sample texture FIRST (must be in uniform control flow before any branching)
   var color = textureSample(myTexture, mySampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)));
   var rgb = color.rgb;
 
-  // Check if outside bounds and set to black if so
+  // Check if outside texture bounds (0-1) and set to black
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
     rgb = vec3<f32>(0.0);
+  }
+
+  // When crop is active, only show the crop region - black out everything else
+  if (params.cropWidth > 0.0) {
+    let cropMinU = params.cropX / params.imageWidth;
+    let cropMaxU = (params.cropX + params.cropWidth) / params.imageWidth;
+    let cropMinV = params.cropY / params.imageHeight;
+    let cropMaxV = (params.cropY + params.cropHeight) / params.imageHeight;
+
+    // If UV is outside the crop region, render black
+    if (uv.x < cropMinU || uv.x > cropMaxU || uv.y < cropMinV || uv.y > cropMaxV) {
+      rgb = vec3<f32>(0.0);
+    }
   }
 
   // 1. Brightness

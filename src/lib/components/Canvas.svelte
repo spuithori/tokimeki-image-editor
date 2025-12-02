@@ -16,6 +16,7 @@
     blurAreas?: BlurArea[];
     stampAreas?: StampArea[];
     onZoom?: (delta: number, centerX?: number, centerY?: number) => void;
+    onViewportChange?: (viewportUpdate: Partial<Viewport>) => void;
   }
 
   let {
@@ -29,7 +30,8 @@
     cropArea = null,
     blurAreas = [],
     stampAreas = [],
-    onZoom
+    onZoom,
+    onViewportChange
   }: Props = $props();
 
   let canvasElement = $state<HTMLCanvasElement | null>(null);
@@ -299,8 +301,12 @@
       const newOffsetX = viewport.offsetX + deltaX;
       const newOffsetY = viewport.offsetY + deltaY;
 
-      viewport.offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
-      viewport.offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+      const clampedOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
+      const clampedOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+
+      if (onViewportChange) {
+        onViewportChange({ offsetX: clampedOffsetX, offsetY: clampedOffsetY });
+      }
 
       lastPanPosition = { x: e.clientX, y: e.clientY };
       e.preventDefault();
@@ -343,8 +349,12 @@
       const newOffsetX = viewport.offsetX + deltaX;
       const newOffsetY = viewport.offsetY + deltaY;
 
-      viewport.offsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
-      viewport.offsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+      const clampedOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
+      const clampedOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+
+      if (onViewportChange) {
+        onViewportChange({ offsetX: clampedOffsetX, offsetY: clampedOffsetY });
+      }
 
       lastPanPosition = { x: touch.clientX, y: touch.clientY };
     } else if (e.touches.length === 2) {
