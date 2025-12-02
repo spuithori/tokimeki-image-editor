@@ -23,7 +23,7 @@
       shadows: 0,
       brightness: 0,
       saturation: 0,
-      hue: 0,
+      temperature: 0,
       vignette: 0,
       sepia: 0,
       grayscale: 0
@@ -141,19 +141,19 @@
       />
     </div>
 
-    <!-- Hue -->
+    <!-- Temperature -->
     <div class="adjustment-control">
-      <label for="hue">
-        <span>{$_('adjustments.hue')}</span>
-        <span class="value">{adjustments.hue}°</span>
+      <label for="temperature">
+        <span>{$_('adjustments.temperature')}</span>
+        <span class="value">{adjustments.temperature}</span>
       </label>
       <input
-        id="hue"
+        id="temperature"
         type="range"
-        min="-180"
-        max="180"
-        value={adjustments.hue}
-        oninput={(e) => handleChange('hue', Number(e.currentTarget.value))}
+        min="-100"
+        max="100"
+        value={adjustments.temperature}
+        oninput={(e) => handleChange('temperature', Number(e.currentTarget.value))}
       />
     </div>
 

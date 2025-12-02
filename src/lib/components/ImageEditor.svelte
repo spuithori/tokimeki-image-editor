@@ -250,10 +250,10 @@
     saveToHistory();
   }
 
-  function handleExport() {
+  async function handleExport() {
     if (!state.imageData.original) return;
 
-    const exportCanvas = applyTransform(
+    const exportCanvas = await applyTransform(
       state.imageData.original,
       state.transform,
       state.adjustments,
@@ -275,10 +275,10 @@
     }
   }
 
-  function handleComplete() {
+  async function handleComplete() {
     if (!state.imageData.original || !onComplete) return;
 
-    const exportCanvas = applyTransform(
+    const exportCanvas = await applyTransform(
       state.imageData.original,
       state.transform,
       state.adjustments,

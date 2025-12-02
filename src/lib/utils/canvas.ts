@@ -55,7 +55,7 @@ export function calculateFitScale(
   return Math.min(scaleX, scaleY, 1); // Don't scale up, only down
 }
 
-export function drawImage(
+export async function drawImage(
   canvas: HTMLCanvasElement,
   img: HTMLImageElement,
   viewport: Viewport,
@@ -64,7 +64,7 @@ export function drawImage(
   cropArea?: CropArea | null,
   blurAreas?: BlurArea[],
   stampAreas?: StampArea[]
-): void {
+): Promise<void> {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
@@ -117,8 +117,8 @@ export function drawImage(
   ctx.restore();
 
   // Apply all adjustments via pixel manipulation (Safari-compatible)
-  // This modifies the canvas pixels after drawing
-  applyAllAdjustments(canvas, img, viewport, adjustments, cropArea);
+  // Uses WebGPU acceleration when available, falls back to CPU
+  await applyAllAdjustments(canvas, img, viewport, adjustments, cropArea);
 
   // Apply blur areas
   if (blurAreas && blurAreas.length > 0) {
@@ -148,14 +148,14 @@ export function downloadImage(dataUrl: string, filename: string): void {
   link.click();
 }
 
-export function applyTransform(
+export async function applyTransform(
   img: HTMLImageElement,
   transform: TransformState,
   adjustments: AdjustmentsState,
   cropArea: CropArea | null = null,
   blurAreas: BlurArea[] = [],
   stampAreas: StampArea[] = []
-): HTMLCanvasElement {
+): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
   if (!ctx) return canvas;
@@ -200,6 +200,7 @@ export function applyTransform(
   ctx.restore();
 
   // Apply all adjustments via pixel manipulation (Safari-compatible)
+  // Uses WebGPU acceleration when available, falls back to CPU
   // For export, create a centered viewport with no offset
   const exportViewport: Viewport = {
     zoom: 1,
@@ -207,7 +208,7 @@ export function applyTransform(
     offsetY: 0,
     scale: 1
   };
-  applyAllAdjustments(canvas, img, exportViewport, adjustments, cropArea);
+  await applyAllAdjustments(canvas, img, exportViewport, adjustments, cropArea);
 
   // Apply blur areas for export
   if (blurAreas.length > 0) {

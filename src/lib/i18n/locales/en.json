@@ -48,7 +48,7 @@
     "shadows": "Shadows",
     "brightness": "Brightness",
     "saturation": "Saturation",
-    "hue": "Hue",
+    "temperature": "Temperature",
     "vignette": "Vignette"
   },
   "filters": {
