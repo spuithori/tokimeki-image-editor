@@ -2,7 +2,7 @@
   import '$lib/i18n';
   import { _ } from 'svelte-i18n';
   import { Redo2, RotateCcw, Undo2 } from 'lucide-svelte';
-  import type { EditorMode, EditorState, CropArea, TransformState, Viewport, AdjustmentsState, BlurArea } from '../types';
+  import type { EditorMode, EditorState, CropArea, TransformState, Viewport, AdjustmentsState, BlurArea, Annotation } from '../types';
   import { loadImage, calculateFitScale, exportCanvas, downloadImage, applyTransform, applyTransformWithWebGPU } from '../utils/canvas';
   import { createEmptyHistory, createSnapshot, addToHistory, undo, redo, canUndo, canRedo } from '../utils/history';
   import { createDefaultAdjustments } from '../utils/adjustments';
@@ -13,6 +13,7 @@
   import FilterTool from './FilterTool.svelte';
   import BlurTool from './BlurTool.svelte';
   import StampTool from './StampTool.svelte';
+  import AnnotationTool from './AnnotationTool.svelte';
   import ExportTool from './ExportTool.svelte';
 
   interface Props {
@@ -63,7 +64,8 @@
     },
     history: createEmptyHistory(),
     blurAreas: [],
-    stampAreas: []
+    stampAreas: [],
+    annotations: []
   });
 
   let canvasElement = $state<HTMLCanvasElement | null>(null);
@@ -108,6 +110,7 @@
           };
           state.blurAreas = [];
           state.stampAreas = [];
+          state.annotations = [];
 
           // Reset history and save initial state
           state.history = createEmptyHistory();
@@ -150,6 +153,8 @@
         scale: fitScale
       };
       state.blurAreas = [];
+      state.stampAreas = [];
+      state.annotations = [];
 
       // Reset history and save initial state
       state.history = createEmptyHistory();
@@ -250,6 +255,11 @@
     saveToHistory();
   }
 
+  function handleAnnotationsChange(annotations: Annotation[]) {
+    state.annotations = annotations;
+    saveToHistory();
+  }
+
   async function handleExport() {
     if (!state.imageData.original) return;
 
@@ -260,7 +270,8 @@
       state.adjustments,
       state.cropArea,
       state.blurAreas,
-      state.stampAreas
+      state.stampAreas,
+      state.annotations
     );
 
     const dataUrl = exportCanvas.toDataURL(
@@ -286,7 +297,8 @@
       state.adjustments,
       state.cropArea,
       state.blurAreas,
-      state.stampAreas
+      state.stampAreas,
+      state.annotations
     );
 
     const format = state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png';
@@ -361,7 +373,7 @@
   }
 
   function saveToHistory() {
-    const snapshot = createSnapshot(state.cropArea, state.transform, state.adjustments, state.viewport, state.blurAreas, state.stampAreas);
+    const snapshot = createSnapshot(state.cropArea, state.transform, state.adjustments, state.viewport, state.blurAreas, state.stampAreas, state.annotations);
     state.history = addToHistory(state.history, snapshot);
   }
 
@@ -373,6 +385,10 @@
     state.viewport = { ...snapshot.viewport };
     state.blurAreas = snapshot.blurAreas ? snapshot.blurAreas.map((area: any) => ({ ...area })) : [];
     state.stampAreas = snapshot.stampAreas ? snapshot.stampAreas.map((area: any) => ({ ...area })) : [];
+    state.annotations = snapshot.annotations ? snapshot.annotations.map((a: any) => ({
+      ...a,
+      points: a.points.map((p: any) => ({ ...p }))
+    })) : [];
   }
 
   function handleUndo() {
@@ -515,6 +531,7 @@
           cropArea={state.cropArea}
           blurAreas={state.blurAreas}
           stampAreas={state.stampAreas}
+          annotations={state.annotations}
           onZoom={handleZoom}
           onViewportChange={handleViewportChange}
         />
@@ -551,6 +568,18 @@
             stampAreas={state.stampAreas}
             cropArea={state.cropArea}
             onUpdate={handleStampAreasChange}
+            onClose={() => state.mode = null}
+            onViewportChange={handleViewportChange}
+          />
+        {:else if state.mode === 'annotate'}
+          <AnnotationTool
+            canvas={canvasElement}
+            image={state.imageData.original}
+            viewport={state.viewport}
+            transform={state.transform}
+            annotations={state.annotations}
+            cropArea={state.cropArea}
+            onUpdate={handleAnnotationsChange}
             onClose={() => state.mode = null}
             onViewportChange={handleViewportChange}
           />

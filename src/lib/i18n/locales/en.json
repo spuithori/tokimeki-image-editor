@@ -8,6 +8,7 @@
     "filter": "Filter",
     "blur": "Blur",
     "stamp": "Stamp",
+    "annotate": "Annotate",
     "none": "None",
     "flip": "Flip",
     "flipHorizontal": "Flip Horizontal",
@@ -37,6 +38,7 @@
     "filter": "Filters",
     "blur": "Blur Tool",
     "stamp": "Stamp Tool",
+    "annotate": "Annotation Tool",
     "export": "Export Image",
     "undo": "Undo (Ctrl+Z)",
     "redo": "Redo (Ctrl+Shift+Z)"
@@ -75,5 +77,16 @@
   "blur": {
     "strength": "Blur Strength",
     "hint": "Drag on the image to create a blur area. Click on an existing area to edit it."
+  },
+  "annotate": {
+    "tool": "Tool",
+    "pen": "Pen",
+    "eraser": "Eraser",
+    "arrow": "Arrow",
+    "rectangle": "Rectangle",
+    "color": "Color",
+    "strokeWidth": "Stroke Width",
+    "shadow": "Shadow",
+    "clearAll": "Clear All"
   }
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { Crop, Download, SlidersHorizontal, Sparkles, Droplet, Sticker } from 'lucide-svelte';
+  import { Crop, Download, SlidersHorizontal, Sparkles, Droplet, Sticker, PenLine } from 'lucide-svelte';
   import type { EditorMode } from '../types';
 
   interface Props {
@@ -72,6 +72,17 @@
   >
     <Sticker size={20} />
     <span>{$_('editor.stamp')}</span>
+  </button>
+
+  <button
+    class="toolbar-btn"
+    class:active={mode === 'annotate'}
+    disabled={!hasImage}
+    onclick={() => onModeChange('annotate')}
+    title={$_('toolbar.annotate')}
+  >
+    <PenLine size={20} />
+    <span>{$_('editor.annotate')}</span>
   </button>
 
   {#if isStandalone}

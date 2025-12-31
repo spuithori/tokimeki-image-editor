@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { drawImage, preloadStampImage, applyStamps } from '../utils/canvas';
+  import { drawImage, preloadStampImage, applyStamps, applyAnnotations } from '../utils/canvas';
   import { initWebGPUCanvas, uploadImageToGPU, renderWithAdjustments, cleanupWebGPU, isWebGPUInitialized } from '../utils/webgpu-render';
-  import type { Viewport, TransformState, CropArea, AdjustmentsState, BlurArea, StampArea } from '../types';
+  import type { Viewport, TransformState, CropArea, AdjustmentsState, BlurArea, StampArea, Annotation } from '../types';
 
   interface Props {
     canvas?: HTMLCanvasElement | null;
@@ -15,6 +15,7 @@
     cropArea?: CropArea | null;
     blurAreas?: BlurArea[];
     stampAreas?: StampArea[];
+    annotations?: Annotation[];
     onZoom?: (delta: number, centerX?: number, centerY?: number) => void;
     onViewportChange?: (viewportUpdate: Partial<Viewport>) => void;
   }
@@ -30,6 +31,7 @@
     cropArea = null,
     blurAreas = [],
     stampAreas = [],
+    annotations = [],
     onZoom,
     onViewportChange
   }: Props = $props();
@@ -168,6 +170,7 @@
     cropArea?.height;
     blurAreas;
     stampAreas;
+    annotations;
     width;
     height;
   });
@@ -186,6 +189,7 @@
     cropArea;
     blurAreas;
     stampAreas;
+    annotations;
     imageLoadCounter;
   });
 
@@ -224,18 +228,23 @@
       blurAreas
     );
 
-    // Render stamps on overlay canvas
-    if (overlayCanvasElement && stampAreas.length > 0) {
+    // Render stamps and annotations on overlay canvas
+    if (overlayCanvasElement && (stampAreas.length > 0 || annotations.length > 0)) {
       ensureCanvasSize(overlayCanvasElement, width, height);
 
       // Clear overlay canvas
       const ctx = overlayCanvasElement.getContext('2d');
       if (ctx) {
         ctx.clearRect(0, 0, width, height);
-        applyStamps(overlayCanvasElement, currentImage, viewport, stampAreas, cropArea);
+        if (stampAreas.length > 0) {
+          applyStamps(overlayCanvasElement, currentImage, viewport, stampAreas, cropArea);
+        }
+        if (annotations.length > 0) {
+          applyAnnotations(overlayCanvasElement, currentImage, viewport, annotations, cropArea);
+        }
       }
     } else if (overlayCanvasElement) {
-      // Clear overlay if no stamps
+      // Clear overlay if no stamps or annotations
       const ctx = overlayCanvasElement.getContext('2d');
       if (ctx) {
         ctx.clearRect(0, 0, width, height);
@@ -288,7 +297,8 @@
       adjustments,
       cropArea,
       blurAreas,
-      stampAreas
+      stampAreas,
+      annotations
     );
   }
 

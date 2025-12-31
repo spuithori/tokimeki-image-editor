@@ -17,7 +17,8 @@ export function createSnapshot(
   adjustments: any,
   viewport: any,
   blurAreas: any[] = [],
-  stampAreas: any[] = []
+  stampAreas: any[] = [],
+  annotations: any[] = []
 ): HistorySnapshot {
   return {
     cropArea: cropArea ? { ...cropArea } : null,
@@ -25,7 +26,11 @@ export function createSnapshot(
     adjustments: { ...adjustments },
     viewport: { ...viewport },
     blurAreas: blurAreas.map(area => ({ ...area })),
-    stampAreas: stampAreas.map(area => ({ ...area }))
+    stampAreas: stampAreas.map(area => ({ ...area })),
+    annotations: annotations.map(annotation => ({
+      ...annotation,
+      points: annotation.points.map((p: any) => ({ ...p }))
+    }))
   };
 }
 

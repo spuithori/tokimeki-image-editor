@@ -1,4 +1,4 @@
-export type EditorMode = 'crop' | 'rotate' | 'adjust' | 'filter' | 'blur' | 'stamp' | 'export' | null;
+export type EditorMode = 'crop' | 'rotate' | 'adjust' | 'filter' | 'blur' | 'stamp' | 'annotate' | 'export' | null;
 
 export interface ImageData {
   original: HTMLImageElement | null;
@@ -42,6 +42,22 @@ export interface StampArea {
   stampAssetId: string; // reference to StampAsset
   stampType: StampType;
   stampContent: string;
+}
+
+export type AnnotationType = 'pen' | 'arrow' | 'rectangle';
+
+export interface AnnotationPoint {
+  x: number; // image coordinates
+  y: number; // image coordinates
+}
+
+export interface Annotation {
+  id: string;
+  type: AnnotationType;
+  color: string;
+  strokeWidth: number; // in image coordinates
+  points: AnnotationPoint[]; // For pen: all points, for arrow/rectangle: [start, end]
+  shadow: boolean; // Enable drop shadow
 }
 
 export interface TransformState {
@@ -91,6 +107,7 @@ export interface HistorySnapshot {
   viewport: Viewport;
   blurAreas: BlurArea[];
   stampAreas: StampArea[];
+  annotations: Annotation[];
 }
 
 export interface EditorHistory {
@@ -110,4 +127,5 @@ export interface EditorState {
   history: EditorHistory;
   blurAreas: BlurArea[];
   stampAreas: StampArea[];
+  annotations: Annotation[];
 }

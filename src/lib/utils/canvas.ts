@@ -1,4 +1,4 @@
-import type { CropArea, TransformState, ExportOptions, Viewport, AdjustmentsState, BlurArea, StampArea } from '../types';
+import type { CropArea, TransformState, ExportOptions, Viewport, AdjustmentsState, BlurArea, StampArea, Annotation } from '../types';
 import { applyAllAdjustments, applyGaussianBlur } from './adjustments';
 
 // Image cache for stamp images
@@ -63,7 +63,8 @@ export async function drawImage(
   adjustments: AdjustmentsState,
   cropArea?: CropArea | null,
   blurAreas?: BlurArea[],
-  stampAreas?: StampArea[]
+  stampAreas?: StampArea[],
+  annotations?: Annotation[]
 ): Promise<void> {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -129,6 +130,11 @@ export async function drawImage(
   if (stampAreas && stampAreas.length > 0) {
     applyStamps(canvas, img, viewport, stampAreas, cropArea);
   }
+
+  // Apply annotations
+  if (annotations && annotations.length > 0) {
+    applyAnnotations(canvas, img, viewport, annotations, cropArea);
+  }
 }
 
 export function exportCanvas(
@@ -154,7 +160,8 @@ export async function applyTransform(
   adjustments: AdjustmentsState,
   cropArea: CropArea | null = null,
   blurAreas: BlurArea[] = [],
-  stampAreas: StampArea[] = []
+  stampAreas: StampArea[] = [],
+  annotations: Annotation[] = []
 ): Promise<HTMLCanvasElement> {
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d');
@@ -220,6 +227,11 @@ export async function applyTransform(
     applyStamps(canvas, img, exportViewport, stampAreas, cropArea);
   }
 
+  // Apply annotations for export
+  if (annotations.length > 0) {
+    applyAnnotations(canvas, img, exportViewport, annotations, cropArea);
+  }
+
   return canvas;
 }
 
@@ -233,7 +245,8 @@ export async function applyTransformWithWebGPU(
   adjustments: AdjustmentsState,
   cropArea: CropArea | null = null,
   blurAreas: BlurArea[] = [],
-  stampAreas: StampArea[] = []
+  stampAreas: StampArea[] = [],
+  annotations: Annotation[] = []
 ): Promise<HTMLCanvasElement> {
   // Try WebGPU export first
   if (navigator.gpu) {
@@ -248,9 +261,9 @@ export async function applyTransformWithWebGPU(
       );
 
       if (webgpuCanvas) {
-        // Apply stamps on top (WebGPU doesn't handle stamps yet)
-        if (stampAreas.length > 0) {
-          // Create a new Canvas2D to composite WebGPU result + stamps
+        // Apply stamps and annotations on top (WebGPU doesn't handle these yet)
+        if (stampAreas.length > 0 || annotations.length > 0) {
+          // Create a new Canvas2D to composite WebGPU result + stamps + annotations
           const finalCanvas = document.createElement('canvas');
           finalCanvas.width = webgpuCanvas.width;
           finalCanvas.height = webgpuCanvas.height;
@@ -267,7 +280,12 @@ export async function applyTransformWithWebGPU(
               offsetY: 0,
               scale: 1
             };
-            applyStamps(finalCanvas, img, exportViewport, stampAreas, cropArea);
+            if (stampAreas.length > 0) {
+              applyStamps(finalCanvas, img, exportViewport, stampAreas, cropArea);
+            }
+            if (annotations.length > 0) {
+              applyAnnotations(finalCanvas, img, exportViewport, annotations, cropArea);
+            }
 
             return finalCanvas;
           }
@@ -281,7 +299,7 @@ export async function applyTransformWithWebGPU(
   }
 
   // Fallback to Canvas2D
-  return applyTransform(img, transform, adjustments, cropArea, blurAreas, stampAreas);
+  return applyTransform(img, transform, adjustments, cropArea, blurAreas, stampAreas, annotations);
 }
 
 export function screenToImageCoords(
@@ -513,6 +531,154 @@ export function applyStamps(
     }
 
     // Restore context
+    ctx.restore();
+  });
+}
+
+/**
+ * Apply annotation drawings to the canvas
+ * Supports pen strokes, arrows, and rectangles
+ */
+export function applyAnnotations(
+  canvas: HTMLCanvasElement,
+  img: HTMLImageElement,
+  viewport: Viewport,
+  annotations: Annotation[],
+  cropArea?: CropArea | null
+): void {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  const totalScale = viewport.scale * viewport.zoom;
+
+  // Determine source dimensions based on crop
+  const sourceWidth = cropArea ? cropArea.width : img.width;
+  const sourceHeight = cropArea ? cropArea.height : img.height;
+  const offsetX = cropArea ? cropArea.x : 0;
+  const offsetY = cropArea ? cropArea.y : 0;
+
+  // Helper to convert image coords to canvas coords
+  const toCanvasCoords = (x: number, y: number) => {
+    const relativeX = x - offsetX;
+    const relativeY = y - offsetY;
+    return {
+      x: (relativeX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX,
+      y: (relativeY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY
+    };
+  };
+
+  annotations.forEach(annotation => {
+    if (annotation.points.length === 0) return;
+
+    ctx.save();
+    ctx.strokeStyle = annotation.color;
+    ctx.fillStyle = annotation.color;
+    ctx.lineWidth = annotation.strokeWidth * totalScale;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Apply shadow if enabled
+    if (annotation.shadow) {
+      ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+      ctx.shadowBlur = 6;
+      ctx.shadowOffsetX = 3;
+      ctx.shadowOffsetY = 3;
+    }
+
+    if (annotation.type === 'pen') {
+      // Draw pen stroke with smooth curves
+      const points = annotation.points.map(p => toCanvasCoords(p.x, p.y));
+
+      if (points.length === 0) return;
+
+      ctx.beginPath();
+      ctx.moveTo(points[0].x, points[0].y);
+
+      if (points.length === 1) {
+        // Single point - just a dot
+        ctx.lineTo(points[0].x, points[0].y);
+      } else if (points.length === 2) {
+        // Two points - straight line
+        ctx.lineTo(points[1].x, points[1].y);
+      } else {
+        // Use quadratic bezier curves for smooth lines
+        for (let i = 1; i < points.length - 1; i++) {
+          const prev = points[i - 1];
+          const curr = points[i];
+          const next = points[i + 1];
+
+          if (i === 1) {
+            // First segment: line to first midpoint
+            const firstMidX = (prev.x + curr.x) / 2;
+            const firstMidY = (prev.y + curr.y) / 2;
+            ctx.lineTo(firstMidX, firstMidY);
+          }
+
+          // Calculate end point (midpoint between current and next)
+          const endX = (curr.x + next.x) / 2;
+          const endY = (curr.y + next.y) / 2;
+
+          // Quadratic bezier curve with current point as control point
+          ctx.quadraticCurveTo(curr.x, curr.y, endX, endY);
+        }
+
+        // Final segment to last point
+        const lastPoint = points[points.length - 1];
+        ctx.lineTo(lastPoint.x, lastPoint.y);
+      }
+      ctx.stroke();
+
+    } else if (annotation.type === 'arrow' && annotation.points.length >= 2) {
+      // Draw arrow
+      const start = toCanvasCoords(annotation.points[0].x, annotation.points[0].y);
+      const end = toCanvasCoords(annotation.points[1].x, annotation.points[1].y);
+
+      const angle = Math.atan2(end.y - start.y, end.x - start.x);
+      const scaledStroke = annotation.strokeWidth * totalScale;
+      const headLength = scaledStroke * 3;
+      const headWidth = scaledStroke * 2;
+
+      // Draw line (shortened to not overlap with arrowhead)
+      const lineEndX = end.x - headLength * 0.7 * Math.cos(angle);
+      const lineEndY = end.y - headLength * 0.7 * Math.sin(angle);
+
+      ctx.beginPath();
+      ctx.moveTo(start.x, start.y);
+      ctx.lineTo(lineEndX, lineEndY);
+      ctx.stroke();
+
+      // Draw arrowhead
+      ctx.beginPath();
+      ctx.moveTo(end.x, end.y);
+      ctx.lineTo(
+        end.x - headLength * Math.cos(angle) + headWidth * Math.sin(angle),
+        end.y - headLength * Math.sin(angle) - headWidth * Math.cos(angle)
+      );
+      ctx.lineTo(
+        end.x - headLength * Math.cos(angle) - headWidth * Math.sin(angle),
+        end.y - headLength * Math.sin(angle) + headWidth * Math.cos(angle)
+      );
+      ctx.closePath();
+      ctx.fill();
+
+    } else if (annotation.type === 'rectangle' && annotation.points.length >= 2) {
+      // Draw rounded rectangle
+      const start = toCanvasCoords(annotation.points[0].x, annotation.points[0].y);
+      const end = toCanvasCoords(annotation.points[1].x, annotation.points[1].y);
+
+      const rectX = Math.min(start.x, end.x);
+      const rectY = Math.min(start.y, end.y);
+      const rectWidth = Math.abs(end.x - start.x);
+      const rectHeight = Math.abs(end.y - start.y);
+      const cornerRadius = annotation.strokeWidth * totalScale * 1.5;
+
+      ctx.beginPath();
+      ctx.roundRect(rectX, rectY, rectWidth, rectHeight, cornerRadius);
+      ctx.stroke();
+    }
+
     ctx.restore();
   });
 }

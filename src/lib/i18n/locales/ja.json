@@ -8,6 +8,7 @@
     "filter": "フィルター",
     "blur": "ぼかし",
     "stamp": "スタンプ",
+    "annotate": "ペン",
     "none": "なし",
     "flip": "反転",
     "flipHorizontal": "左右反転",
@@ -37,6 +38,7 @@
     "filter": "フィルター",
     "blur": "ぼかしツール",
     "stamp": "スタンプツール",
+    "annotate": "アノテーションツール",
     "export": "画像をエクスポート",
     "undo": "元に戻す (Ctrl+Z)",
     "redo": "やり直す (Ctrl+Shift+Z)"
@@ -75,5 +77,16 @@
   "blur": {
     "strength": "ぼかしの強さ",
     "hint": "画像上をドラッグしてぼかし領域を作成します。既存の領域をクリックすると編集できます。"
+  },
+  "annotate": {
+    "tool": "ツール",
+    "pen": "ペン",
+    "eraser": "消しゴム",
+    "arrow": "矢印",
+    "rectangle": "四角形",
+    "color": "色",
+    "strokeWidth": "線の太さ",
+    "shadow": "影",
+    "clearAll": "すべて消去"
   }
 }
