@@ -3,7 +3,7 @@
   import type { AdjustmentsState, CropArea, TransformState, Viewport } from '../types';
   import { FILTER_PRESETS, applyFilterPreset, matchesFilterPreset } from '../utils/filters';
   import { applyGaussianBlur } from '../utils/adjustments';
-  import { X } from 'lucide-svelte';
+  import ToolPanel from './ToolPanel.svelte';
 
   interface Props {
     image: HTMLImageElement | null;
@@ -439,94 +439,52 @@
 </script>
 
 <div class="filter-tool" onwheel={handleWheel}>
-  <div class="tool-header">
-    <h3>{$_('editor.filter')}</h3>
-    <button class="close-btn" onclick={onClose} title={$_('editor.close')}>
-      <X size={20} />
-    </button>
-  </div>
+  <ToolPanel title={$_('editor.filter')} {onClose}>
+    {#snippet children()}
+      <div class="filter-info">
+        <p class="info-text">{$_('filters.info')}</p>
+      </div>
 
-  <div class="filter-info">
-    <p class="info-text">{$_('filters.info')}</p>
-  </div>
+      {#if isGenerating && filterPreviews.size === 0}
+        <div class="loading-message">
+          <p>Generating previews...</p>
+        </div>
+      {/if}
 
-  {#if isGenerating && filterPreviews.size === 0}
-    <div class="loading-message">
-      <p>Generating previews...</p>
-    </div>
-  {/if}
-
-  <div class="filter-grid">
-    {#each FILTER_PRESETS as preset}
-      <button
-        class="filter-card"
-        class:active={selectedFilterId === preset.id}
-        onclick={() => handleFilterSelect(preset.id)}
-      >
-        <div class="filter-preview">
-          {#if filterPreviews.has(preset.id)}
-            <img
-              src={filterPreviews.get(preset.id)}
-              alt={$_(preset.id === 'none' ? 'editor.none' : `filters.${preset.id}`)}
-              class="preview-image"
-            />
-            <div class="filter-name-overlay">
-              {$_(preset.id === 'none' ? 'editor.none' : `filters.${preset.id}`)}
-            </div>
-          {:else}
-            <div class="filter-name-loading">
-              {$_(preset.id === 'none' ? 'editor.none' : `filters.${preset.id}`)}
-              {#if isGenerating}
-                <div class="loading-spinner"></div>
+      <div class="filter-grid">
+        {#each FILTER_PRESETS as preset}
+          <button
+            class="filter-card"
+            class:active={selectedFilterId === preset.id}
+            onclick={() => handleFilterSelect(preset.id)}
+          >
+            <div class="filter-preview">
+              {#if filterPreviews.has(preset.id)}
+                <img
+                  src={filterPreviews.get(preset.id)}
+                  alt={$_(preset.id === 'none' ? 'editor.none' : `filters.${preset.id}`)}
+                  class="preview-image"
+                />
+                <div class="filter-name-overlay">
+                  {$_(preset.id === 'none' ? 'editor.none' : `filters.${preset.id}`)}
+                </div>
+              {:else}
+                <div class="filter-name-loading">
+                  {$_(preset.id === 'none' ? 'editor.none' : `filters.${preset.id}`)}
+                  {#if isGenerating}
+                    <div class="loading-spinner"></div>
+                  {/if}
+                </div>
               {/if}
             </div>
-          {/if}
-        </div>
-      </button>
-    {/each}
-  </div>
+          </button>
+        {/each}
+      </div>
+    {/snippet}
+  </ToolPanel>
 </div>
 
 <style lang="postcss">
-  .filter-tool {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .tool-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    position: sticky;
-    top: 0;
-    z-index: 1;
-  }
-
-  .tool-header h3 {
-    margin: 0;
-    font-size: 1.1rem;
-    color: #fff;
-  }
-
-  .close-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.25rem;
-    background: transparent;
-    border: none;
-    color: #999;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: all 0.2s;
-  }
-
-  .close-btn:hover {
-    background: #444;
-    color: #fff;
-  }
-
   .filter-grid {
     display: grid;
     grid-template-columns: repeat(2, 120px);

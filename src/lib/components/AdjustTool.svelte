@@ -1,7 +1,7 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
   import type { AdjustmentsState } from '../types';
-  import { X } from 'lucide-svelte';
+  import ToolPanel from './ToolPanel.svelte';
 
   interface Props {
     adjustments: AdjustmentsState;
@@ -39,14 +39,9 @@
 </script>
 
 <div class="adjust-tool" onwheel={handleWheel}>
-  <div class="tool-header">
-    <h3>{$_('editor.adjust')}</h3>
-    <button class="close-btn" onclick={onClose} title={$_('editor.close')}>
-      <X size={20} />
-    </button>
-  </div>
-
-  <div class="adjustments-grid">
+  <ToolPanel title={$_('editor.adjust')} {onClose}>
+    {#snippet children()}
+      <div class="adjustments-grid">
     <!-- Exposure -->
     <div class="adjustment-control">
       <label for="exposure">
@@ -206,52 +201,18 @@
         oninput={(e) => handleChange('grain', Number(e.currentTarget.value))}
       />
     </div>
-  </div>
+      </div>
+    {/snippet}
 
-  <div class="tool-actions">
-    <button class="btn btn-secondary" onclick={resetAll}>
-      {$_('editor.reset')}
-    </button>
-  </div>
+    {#snippet actions()}
+      <button class="btn btn-secondary" onclick={resetAll}>
+        {$_('editor.reset')}
+      </button>
+    {/snippet}
+  </ToolPanel>
 </div>
 
 <style lang="postcss">
-  .adjust-tool {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .tool-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .tool-header h3 {
-    margin: 0;
-    font-size: 1.1rem;
-    color: #fff;
-  }
-
-  .close-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.25rem;
-    background: transparent;
-    border: none;
-    color: #999;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: all 0.2s;
-  }
-
-  .close-btn:hover {
-    background: #444;
-    color: #fff;
-  }
-
   .adjustments-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -331,12 +292,6 @@
   .adjustment-control input[type='range']::-moz-range-thumb:hover {
     background: var(--primary-color, #63b97b);
     transform: scale(1.1);
-  }
-
-  .tool-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
   }
 
   .btn {

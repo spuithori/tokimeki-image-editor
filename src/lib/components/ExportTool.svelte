@@ -2,6 +2,7 @@
   import { _ } from 'svelte-i18n';
   import { Download } from 'lucide-svelte';
   import type { ExportOptions } from '../types';
+  import ToolPanel from './ToolPanel.svelte';
 
   interface Props {
     options: ExportOptions;
@@ -28,54 +29,53 @@
 </script>
 
 <div class="export-tool" onwheel={handleWheel}>
-  <div class="tool-header">
-    <h3>{$_('editor.export')}</h3>
-    <button class="close-btn" onclick={onClose}>✕</button>
-  </div>
-
-  <div class="tool-content">
-    <div class="tool-group">
-      <label>{$_('editor.format')}</label>
-      <div class="format-buttons">
-        <button
-          class="format-btn"
-          class:active={options.format === 'png'}
-          onclick={() => handleFormatChange('png')}
-        >
-          PNG
-        </button>
-        <button
-          class="format-btn"
-          class:active={options.format === 'jpeg'}
-          onclick={() => handleFormatChange('jpeg')}
-        >
-          JPEG
-        </button>
-      </div>
-    </div>
-
-    {#if options.format === 'jpeg'}
+  <ToolPanel title={$_('editor.export')} {onClose}>
+    {#snippet children()}
       <div class="tool-group">
-        <label>
-          {$_('editor.quality')}: {Math.round(options.quality * 100)}%
-        </label>
-        <input
-          type="range"
-          min="0.1"
-          max="1"
-          step="0.05"
-          value={options.quality}
-          oninput={handleQualityChange}
-          class="quality-slider"
-        />
+        <label>{$_('editor.format')}</label>
+        <div class="format-buttons">
+          <button
+            class="format-btn"
+            class:active={options.format === 'png'}
+            onclick={() => handleFormatChange('png')}
+          >
+            PNG
+          </button>
+          <button
+            class="format-btn"
+            class:active={options.format === 'jpeg'}
+            onclick={() => handleFormatChange('jpeg')}
+          >
+            JPEG
+          </button>
+        </div>
       </div>
-    {/if}
 
-    <button class="export-btn" onclick={onExport}>
-      <Download size={20} />
-      <span>{$_('editor.download')}</span>
-    </button>
-  </div>
+      {#if options.format === 'jpeg'}
+        <div class="tool-group">
+          <label>
+            {$_('editor.quality')}: {Math.round(options.quality * 100)}%
+          </label>
+          <input
+            type="range"
+            min="0.1"
+            max="1"
+            step="0.05"
+            value={options.quality}
+            oninput={handleQualityChange}
+            class="quality-slider"
+          />
+        </div>
+      {/if}
+    {/snippet}
+
+    {#snippet actions()}
+      <button class="export-btn" onclick={onExport}>
+        <Download size={20} />
+        <span>{$_('editor.download')}</span>
+      </button>
+    {/snippet}
+  </ToolPanel>
 </div>
 
 <style lang="postcss">
@@ -83,43 +83,6 @@
     display: flex;
     flex-direction: column;
     gap: 1rem;
-  }
-
-  .tool-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-  }
-
-  .tool-header h3 {
-    margin: 0;
-    font-size: 1.1rem;
-  }
-
-  .close-btn {
-    background: none;
-    border: none;
-    color: #fff;
-    font-size: 1.5rem;
-    cursor: pointer;
-    padding: 0;
-    width: 30px;
-    height: 30px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 4px;
-    transition: background 0.2s;
-  }
-
-  .close-btn:hover {
-    background: #444;
-  }
-
-  .tool-content {
-    display: flex;
-    flex-direction: column;
-    gap: 1.5rem;
   }
 
   .tool-group {

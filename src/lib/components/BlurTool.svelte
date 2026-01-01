@@ -3,7 +3,7 @@
   import { _ } from 'svelte-i18n';
   import type { BlurArea, Viewport, TransformState, CropArea } from '../types';
   import { screenToImageCoords, imageToCanvasCoords } from '../utils/canvas';
-  import { X } from 'lucide-svelte';
+  import ToolPanel from './ToolPanel.svelte';
 
   interface Props {
     canvas: HTMLCanvasElement | null;
@@ -477,16 +477,9 @@
 </div>
 
 <!-- Control panel -->
-<div class="blur-tool-panel">
-  <div class="panel-header">
-    <h3>{$_('editor.blur')}</h3>
-    <button class="close-btn" onclick={onClose} title={$_('editor.close')}>
-      <X size={20} />
-    </button>
-  </div>
-
-  {#if selectedArea}
-    <div class="panel-content">
+<ToolPanel title={$_('editor.blur')} {onClose}>
+  {#snippet children()}
+    {#if selectedArea}
       <div class="control-group">
         <label for="blur-strength">
           <span>{$_('blur.strength')}</span>
@@ -501,19 +494,21 @@
           oninput={(e) => handleBlurStrengthChange(Number(e.currentTarget.value))}
         />
       </div>
-
-      <div class="panel-actions">
-        <button class="btn btn-danger" onclick={handleDeleteArea}>
-          {$_('editor.delete')}
-        </button>
+    {:else}
+      <div class="panel-hint">
+        <p>{$_('blur.hint')}</p>
       </div>
-    </div>
-  {:else}
-    <div class="panel-hint">
-      <p>{$_('blur.hint')}</p>
-    </div>
-  {/if}
-</div>
+    {/if}
+  {/snippet}
+
+  {#snippet actions()}
+    {#if selectedArea}
+      <button class="btn btn-danger" onclick={handleDeleteArea}>
+        {$_('editor.delete')}
+      </button>
+    {/if}
+  {/snippet}
+</ToolPanel>
 
 <style lang="postcss">
   .blur-tool-overlay {
@@ -534,55 +529,6 @@
 
   .blur-tool-svg rect {
     pointer-events: all;
-  }
-
-  .blur-tool-panel {
-    position: absolute;
-    top: 1rem;
-    right: 1rem;
-    background: rgba(30, 30, 30, 0.95);
-    border: 1px solid #444;
-    border-radius: 8px;
-    padding: 1rem;
-    min-width: 250px;
-    backdrop-filter: blur(10px);
-  }
-
-  .panel-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 1rem;
-  }
-
-  .panel-header h3 {
-    margin: 0;
-    font-size: 1.1rem;
-    color: #fff;
-  }
-
-  .close-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0.25rem;
-    background: transparent;
-    border: none;
-    color: #999;
-    cursor: pointer;
-    border-radius: 4px;
-    transition: all 0.2s;
-  }
-
-  .close-btn:hover {
-    background: #444;
-    color: #fff;
-  }
-
-  .panel-content {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
   }
 
   .control-group {
@@ -641,12 +587,6 @@
   .control-group input[type='range']::-moz-range-thumb:hover {
     background: var(--primary-color, #63b97b);
     transform: scale(1.1);
-  }
-
-  .panel-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: 0.5rem;
   }
 
   .btn {

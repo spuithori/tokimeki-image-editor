@@ -44,19 +44,20 @@ export interface StampArea {
   stampContent: string;
 }
 
-export type AnnotationType = 'pen' | 'arrow' | 'rectangle';
+export type AnnotationType = 'pen' | 'brush' | 'arrow' | 'rectangle';
 
 export interface AnnotationPoint {
   x: number; // image coordinates
   y: number; // image coordinates
+  width?: number; // for brush: width at this point (based on speed)
 }
 
 export interface Annotation {
   id: string;
   type: AnnotationType;
   color: string;
-  strokeWidth: number; // in image coordinates
-  points: AnnotationPoint[]; // For pen: all points, for arrow/rectangle: [start, end]
+  strokeWidth: number; // in image coordinates (base width for brush)
+  points: AnnotationPoint[]; // For pen/brush: all points, for arrow/rectangle: [start, end]
   shadow: boolean; // Enable drop shadow
 }
 

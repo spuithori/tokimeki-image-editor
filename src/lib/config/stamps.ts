@@ -19,6 +19,7 @@ export const STAMP_ASSETS: StampAsset[] = [
   { id: 'emoji-cloud', type: 'emoji', content: '☁️', preview: '☁️' },
   { id: 'emoji-flower', type: 'emoji', content: '🌸', preview: '🌸' },
   { id: 'emoji-cherry', type: 'emoji', content: '🍒', preview: '🍒' },
+  { id: 'emoji-bamboo', type: 'emoji', content: '🎍', preview: '🎍' },
 
   // { id: 'image-1', type: 'image', content: '/stamps/christmas_tree.png', preview: '/stamps/christmas_tree.png' },
 

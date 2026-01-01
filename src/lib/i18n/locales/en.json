@@ -81,6 +81,7 @@
   "annotate": {
     "tool": "Tool",
     "pen": "Pen",
+    "brush": "Brush",
     "eraser": "Eraser",
     "arrow": "Arrow",
     "rectangle": "Rectangle",

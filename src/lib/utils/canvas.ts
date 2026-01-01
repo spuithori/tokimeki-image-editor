@@ -630,6 +630,209 @@ export function applyAnnotations(
       }
       ctx.stroke();
 
+    } else if (annotation.type === 'brush' && annotation.points.length >= 1) {
+      // Draw brush stroke with variable width
+      const rawPoints = annotation.points.map(p => ({
+        ...toCanvasCoords(p.x, p.y),
+        width: p.width ?? annotation.strokeWidth
+      }));
+
+      // Handle single point - create an elliptical brush mark (点)
+      if (rawPoints.length === 1) {
+        const p = rawPoints[0];
+        const width = (p.width * totalScale) / 2;
+        const rx = width * 0.8;
+        const ry = width * 1.2;
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+      // Handle 2 points - create a teardrop/brush stroke shape
+      } else if (rawPoints.length === 2) {
+        const p1 = rawPoints[0];
+        const p2 = rawPoints[1];
+        const w1 = ((p1.width ?? annotation.strokeWidth * 0.3) * totalScale) / 2;
+        const w2 = ((p2.width ?? annotation.strokeWidth * 0.5) * totalScale) / 2;
+
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        if (len > 0) {
+          const nx = -dy / len;
+          const ny = dx / len;
+
+          const tipExtend = w2 * 0.3;
+          const tipX = p2.x + (dx / len) * tipExtend;
+          const tipY = p2.y + (dy / len) * tipExtend;
+
+          ctx.beginPath();
+          ctx.moveTo(p1.x + nx * w1, p1.y + ny * w1);
+          ctx.quadraticCurveTo(
+            (p1.x + nx * w1 + p2.x + nx * w2) / 2 + nx * w2 * 0.3,
+            (p1.y + ny * w1 + p2.y + ny * w2) / 2 + ny * w2 * 0.3,
+            p2.x + nx * w2, p2.y + ny * w2
+          );
+          ctx.quadraticCurveTo(tipX + nx * w2 * 0.2, tipY + ny * w2 * 0.2, tipX, tipY);
+          ctx.quadraticCurveTo(tipX - nx * w2 * 0.2, tipY - ny * w2 * 0.2, p2.x - nx * w2, p2.y - ny * w2);
+          ctx.quadraticCurveTo(
+            (p1.x - nx * w1 + p2.x - nx * w2) / 2 - nx * w2 * 0.3,
+            (p1.y - ny * w1 + p2.y - ny * w2) / 2 - ny * w2 * 0.3,
+            p1.x - nx * w1, p1.y - ny * w1
+          );
+          ctx.closePath();
+          ctx.fill();
+        }
+
+      // Handle 3+ points with interpolation for smoother curves
+      } else {
+        // Interpolate points for smoother curves
+        const interpolated: { x: number; y: number; width: number }[] = [];
+        for (let i = 0; i < rawPoints.length - 1; i++) {
+          const p1 = rawPoints[i];
+          const p2 = rawPoints[i + 1];
+          const dist = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+
+          interpolated.push(p1);
+
+          const interpolateCount = Math.floor(dist / 5);
+          for (let j = 1; j < interpolateCount; j++) {
+            const t = j / interpolateCount;
+            const smoothT = t * t * (3 - 2 * t);
+            interpolated.push({
+              x: p1.x + (p2.x - p1.x) * t,
+              y: p1.y + (p2.y - p1.y) * t,
+              width: p1.width + (p2.width - p1.width) * smoothT
+            });
+          }
+        }
+        interpolated.push(rawPoints[rawPoints.length - 1]);
+
+        // Generate outline for variable-width path
+        let leftSide: { x: number; y: number }[] = [];
+        let rightSide: { x: number; y: number }[] = [];
+
+        for (let i = 0; i < interpolated.length; i++) {
+          const curr = interpolated[i];
+          const width = (curr.width * totalScale) / 2;
+
+          let dx: number, dy: number;
+          if (i === 0) {
+            dx = interpolated[1].x - curr.x;
+            dy = interpolated[1].y - curr.y;
+          } else if (i === interpolated.length - 1) {
+            dx = curr.x - interpolated[i - 1].x;
+            dy = curr.y - interpolated[i - 1].y;
+          } else {
+            const lookback = Math.min(i, 3);
+            const lookforward = Math.min(interpolated.length - 1 - i, 3);
+            dx = interpolated[i + lookforward].x - interpolated[i - lookback].x;
+            dy = interpolated[i + lookforward].y - interpolated[i - lookback].y;
+          }
+
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len === 0) continue;
+
+          const nx = -dy / len;
+          const ny = dx / len;
+
+          leftSide.push({ x: curr.x + nx * width, y: curr.y + ny * width });
+          rightSide.push({ x: curr.x - nx * width, y: curr.y - ny * width });
+        }
+
+        // Smooth the outline points to reduce zigzag
+        const smoothOutline = (pts: { x: number; y: number }[], windowSize: number = 5) => {
+          if (pts.length < 3) return pts;
+          const result: { x: number; y: number }[] = [];
+          const halfWindow = Math.floor(windowSize / 2);
+          for (let i = 0; i < pts.length; i++) {
+            if (i < halfWindow || i >= pts.length - halfWindow) {
+              result.push(pts[i]);
+              continue;
+            }
+            let sumX = 0, sumY = 0, count = 0;
+            for (let j = -halfWindow; j <= halfWindow; j++) {
+              const idx = i + j;
+              if (idx >= 0 && idx < pts.length) {
+                sumX += pts[idx].x;
+                sumY += pts[idx].y;
+                count++;
+              }
+            }
+            result.push({ x: sumX / count, y: sumY / count });
+          }
+          return result;
+        };
+
+        leftSide = smoothOutline(leftSide);
+        rightSide = smoothOutline(rightSide);
+
+        if (leftSide.length >= 2) {
+          ctx.beginPath();
+          ctx.moveTo(leftSide[0].x, leftSide[0].y);
+
+          // Left side with smooth curves
+          for (let i = 1; i < leftSide.length - 1; i++) {
+            const curr = leftSide[i];
+            const next = leftSide[i + 1];
+            const endX = (curr.x + next.x) / 2;
+            const endY = (curr.y + next.y) / 2;
+            ctx.quadraticCurveTo(curr.x, curr.y, endX, endY);
+          }
+          ctx.lineTo(leftSide[leftSide.length - 1].x, leftSide[leftSide.length - 1].y);
+
+          // End cap with rounded connection
+          const lastPoint = interpolated[interpolated.length - 1];
+          const lastWidth = (lastPoint.width * totalScale) / 2;
+          const tipExtend = lastWidth * 0.4;
+          const lastDx = interpolated.length > 1
+            ? interpolated[interpolated.length - 1].x - interpolated[interpolated.length - 2].x
+            : 0;
+          const lastDy = interpolated.length > 1
+            ? interpolated[interpolated.length - 1].y - interpolated[interpolated.length - 2].y
+            : 0;
+          const lastLen = Math.sqrt(lastDx * lastDx + lastDy * lastDy);
+
+          if (lastLen > 0) {
+            const tipX = lastPoint.x + (lastDx / lastLen) * tipExtend;
+            const tipY = lastPoint.y + (lastDy / lastLen) * tipExtend;
+            ctx.quadraticCurveTo(tipX, tipY, rightSide[rightSide.length - 1].x, rightSide[rightSide.length - 1].y);
+          } else {
+            ctx.lineTo(rightSide[rightSide.length - 1].x, rightSide[rightSide.length - 1].y);
+          }
+
+          // Right side backward with smooth curves
+          for (let i = rightSide.length - 2; i > 0; i--) {
+            const curr = rightSide[i];
+            const prev = rightSide[i - 1];
+            const endX = (curr.x + prev.x) / 2;
+            const endY = (curr.y + prev.y) / 2;
+            ctx.quadraticCurveTo(curr.x, curr.y, endX, endY);
+          }
+          ctx.lineTo(rightSide[0].x, rightSide[0].y);
+
+          // Start cap with rounded connection
+          const firstPoint = interpolated[0];
+          const firstWidth = (firstPoint.width * totalScale) / 2;
+          const startExtend = firstWidth * 0.3;
+          const firstDx = interpolated.length > 1
+            ? interpolated[0].x - interpolated[1].x
+            : 0;
+          const firstDy = interpolated.length > 1
+            ? interpolated[0].y - interpolated[1].y
+            : 0;
+          const firstLen = Math.sqrt(firstDx * firstDx + firstDy * firstDy);
+
+          if (firstLen > 0) {
+            const startTipX = firstPoint.x + (firstDx / firstLen) * startExtend;
+            const startTipY = firstPoint.y + (firstDy / firstLen) * startExtend;
+            ctx.quadraticCurveTo(startTipX, startTipY, leftSide[0].x, leftSide[0].y);
+          }
+
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
     } else if (annotation.type === 'arrow' && annotation.points.length >= 2) {
       // Draw arrow
       const start = toCanvasCoords(annotation.points[0].x, annotation.points[0].y);

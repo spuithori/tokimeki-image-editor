@@ -18,6 +18,10 @@
 
   interface Props {
     initialImage?: File | string;
+    initialMode?: EditorMode;
+    initialTool?: 'pen' | 'brush' | 'arrow' | 'rectangle' | 'eraser';
+    initialStrokeWidth?: number;
+    initialColor?: string;
     width?: number;
     height?: number;
     isStandalone?: boolean;
@@ -28,6 +32,10 @@
 
   let {
     initialImage,
+    initialMode = null,
+    initialTool,
+    initialStrokeWidth,
+    initialColor,
     width = 800,
     height = 600,
     isStandalone = false,
@@ -115,6 +123,11 @@
           // Reset history and save initial state
           state.history = createEmptyHistory();
           saveToHistory();
+
+          // Apply initial mode if specified
+          if (initialMode) {
+            state.mode = initialMode;
+          }
         };
         img.onerror = (error) => {
           console.error('Failed to load initial image:', error);
@@ -159,6 +172,11 @@
       // Reset history and save initial state
       state.history = createEmptyHistory();
       saveToHistory();
+
+      // Apply initial mode if specified
+      if (initialMode) {
+        state.mode = initialMode;
+      }
     } catch (error) {
       console.error('Failed to load image:', error);
     }
@@ -579,6 +597,9 @@
             transform={state.transform}
             annotations={state.annotations}
             cropArea={state.cropArea}
+            {initialTool}
+            {initialStrokeWidth}
+            {initialColor}
             onUpdate={handleAnnotationsChange}
             onClose={() => state.mode = null}
             onViewportChange={handleViewportChange}
@@ -586,33 +607,27 @@
         {/if}
 
         {#if state.mode === 'adjust'}
-          <div class="tools-panel">
-            <AdjustTool
-              adjustments={state.adjustments}
-              onChange={handleAdjustmentsChange}
-              onClose={() => state.mode = null}
-            />
-          </div>
+          <AdjustTool
+            adjustments={state.adjustments}
+            onChange={handleAdjustmentsChange}
+            onClose={() => state.mode = null}
+          />
         {:else if state.mode === 'filter'}
-          <div class="tools-panel">
-            <FilterTool
-              image={state.imageData.original}
-              adjustments={state.adjustments}
-              transform={state.transform}
-              cropArea={state.cropArea}
-              onChange={handleFilterApply}
-              onClose={() => state.mode = null}
-            />
-          </div>
+          <FilterTool
+            image={state.imageData.original}
+            adjustments={state.adjustments}
+            transform={state.transform}
+            cropArea={state.cropArea}
+            onChange={handleFilterApply}
+            onClose={() => state.mode = null}
+          />
         {:else if state.mode === 'export' && isStandalone}
-          <div class="tools-panel">
-            <ExportTool
-              options={state.exportOptions}
-              onChange={(options) => state.exportOptions = { ...state.exportOptions, ...options }}
-              onExport={handleExport}
-              onClose={() => state.mode = null}
-            />
-          </div>
+          <ExportTool
+            options={state.exportOptions}
+            onChange={(options) => state.exportOptions = { ...state.exportOptions, ...options }}
+            onExport={handleExport}
+            onClose={() => state.mode = null}
+          />
         {/if}
       </div>
     {/if}
@@ -659,6 +674,12 @@
     display: flex;
     align-items: center;
     width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+
+    &::-webkit-scrollbar {
+      display: none;
+    }
   }
 
   .editor-body {
@@ -711,31 +732,6 @@
     @media (max-width: 767px) {
       flex: 1;
       min-height: 0;
-    }
-  }
-
-  .tools-panel {
-    padding: 1rem;
-    background: #2a2a2a;
-    border-radius: 8px;
-    position: absolute;
-    width: min-content;
-    right: 1rem;
-    top: 1rem;
-    bottom: 1rem;
-    overflow-y: auto;
-    scrollbar-width: thin;
-
-    @media (max-width: 767px) {
-      position: absolute;
-      left: 0;
-      right: 0;
-      top: auto;
-      bottom: 0;
-      width: auto;
-      max-height: 50vh;
-      border-radius: 16px 16px 0 0;
-      z-index: 1001;
     }
   }
 
