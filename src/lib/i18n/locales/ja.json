@@ -85,9 +85,12 @@
     "eraser": "消しゴム",
     "arrow": "矢印",
     "rectangle": "四角形",
+    "text": "テキスト",
     "color": "色",
     "strokeWidth": "線の太さ",
+    "fontSize": "フォントサイズ",
     "shadow": "影",
-    "clearAll": "すべて消去"
+    "clearAll": "すべて消去",
+    "textPlaceholder": "テキストを入力..."
   }
 }

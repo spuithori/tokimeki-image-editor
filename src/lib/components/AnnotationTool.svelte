@@ -3,7 +3,7 @@
   import { _ } from 'svelte-i18n';
   import type { Annotation, AnnotationType, AnnotationPoint, Viewport, TransformState, CropArea } from '../types';
   import { screenToImageCoords } from '../utils/canvas';
-  import { Pencil, Eraser, ArrowRight, Square, Brush } from 'lucide-svelte';
+  import { Pencil, Eraser, ArrowRight, Square, Brush, Type } from 'lucide-svelte';
   import ToolPanel from './ToolPanel.svelte';
 
   interface Props {
@@ -31,8 +31,97 @@
   let strokeWidth = $state(initialStrokeWidth ?? 10);
   let shadowEnabled = $state(false);
 
+  // Text tool state
+  let fontSize = $state(48);
+  let textInput = $state('');
+  let isTextInputVisible = $state(false);
+  let textInputPosition = $state<{ x: number; y: number; imageX: number; imageY: number } | null>(null);
+  let textInputElement = $state<HTMLInputElement | null>(null);
+
+  // Text drag state
+  let isDraggingText = $state(false);
+  let draggedTextId = $state<string | null>(null);
+  let textDragStart = $state<{ x: number; y: number; originalX: number; originalY: number } | null>(null);
+  let isHoveringText = $state(false);
+
+  // Text selection and resize state
+  let selectedTextId = $state<string | null>(null);
+  let isResizingText = $state(false);
+  let textResizeStart = $state<{ y: number; originalFontSize: number } | null>(null);
+  let isHoveringResizeHandle = $state(false);
+
+  // Text editing state
+  let editingTextId = $state<string | null>(null);
+  let editingTextValue = $state('');
+
+  // Clear text selection and editing when switching away from text tool
+  $effect(() => {
+    if (currentTool !== 'text') {
+      selectedTextId = null;
+      editingTextId = null;
+      editingTextValue = '';
+      isTextInputVisible = false;
+      textInputPosition = null;
+    }
+  });
+
+  // Update selected text color when currentColor changes
+  let prevColor = $state(currentColor);
+  $effect(() => {
+    if (selectedTextId && currentColor !== prevColor) {
+      const updatedAnnotations = annotations.map(a => {
+        if (a.id === selectedTextId) {
+          return { ...a, color: currentColor };
+        }
+        return a;
+      });
+      onUpdate(updatedAnnotations);
+    }
+    prevColor = currentColor;
+  });
+
+  // Get selected text annotation with canvas bounds
+  let selectedTextBounds = $derived.by(() => {
+    if (!selectedTextId) return null;
+    const annotation = annotations.find(a => a.id === selectedTextId);
+    if (!annotation || annotation.type !== 'text' || !annotation.text) return null;
+
+    const point = toCanvasCoords(annotation.points[0]);
+    if (!point) return null;
+
+    const totalScale = viewport.scale * viewport.zoom;
+    const scaledFontSize = (annotation.fontSize ?? 48) * totalScale;
+    const textWidth = calculateTextWidth(annotation.text, scaledFontSize);
+    const textHeight = scaledFontSize;
+
+    return {
+      annotation,
+      x: point.x,
+      y: point.y,
+      width: textWidth,
+      height: textHeight
+    };
+  });
+
   // Preset colors - modern bright tones
   const colorPresets = ['#FF6B6B', '#FFA94D', '#FFD93D', '#6BCB77', '#4D96FF', '#9B72F2', '#F8F9FA', '#495057'];
+
+  // Calculate text width considering full-width and half-width characters
+  function calculateTextWidth(text: string, fontSize: number): number {
+    let width = 0;
+    for (const char of text) {
+      const code = char.charCodeAt(0);
+      // Full-width characters: CJK, full-width alphanumeric, Hangul
+      const isFullWidth =
+        (code >= 0x3000 && code <= 0x9FFF) || // CJK symbols, Hiragana, Katakana, CJK Unified
+        (code >= 0xFF00 && code <= 0xFFEF) || // Full-width forms
+        (code >= 0xAC00 && code <= 0xD7AF) || // Hangul syllables
+        (code >= 0x1100 && code <= 0x11FF);   // Hangul Jamo
+
+      width += isFullWidth ? fontSize : fontSize * 0.6;
+    }
+    return width;
+  }
 
   // Drawing state
   let isDrawing = $state(false);
@@ -131,6 +220,12 @@
 
   // Keyboard handlers for panning (Space + drag)
   function handleKeyDown(event: KeyboardEvent) {
+    // Skip if input/textarea is focused (allow normal text input)
+    const target = event.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+      return;
+    }
+
     if (event.code === 'Space' && !isSpaceHeld) {
       isSpaceHeld = true;
       event.preventDefault();
@@ -138,6 +233,12 @@
   }
 
   function handleKeyUp(event: KeyboardEvent) {
+    // Skip if input/textarea is focused
+    const target = event.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
+      return;
+    }
+
     if (event.code === 'Space') {
       isSpaceHeld = false;
       isPanning = false;
@@ -166,6 +267,69 @@
 
     const imagePoint = toImageCoords(coords.clientX, coords.clientY);
     if (!imagePoint) return;
+
+    if (currentTool === 'text') {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const canvasX = (coords.clientX - rect.left) * scaleX;
+      const canvasY = (coords.clientY - rect.top) * scaleY;
+
+      // Check if clicking on resize handle of selected text
+      if (selectedTextBounds) {
+        const handleSize = 12;
+        const handleX = selectedTextBounds.x + selectedTextBounds.width;
+        const handleY = selectedTextBounds.y + selectedTextBounds.height;
+
+        if (canvasX >= handleX - handleSize && canvasX <= handleX + handleSize &&
+            canvasY >= handleY - handleSize && canvasY <= handleY + handleSize) {
+          // Start resizing
+          isResizingText = true;
+          textResizeStart = {
+            y: coords.clientY,
+            originalFontSize: selectedTextBounds.annotation.fontSize ?? 48
+          };
+          return;
+        }
+      }
+
+      // Check if clicking on existing text annotation
+      const textAnnotation = findTextAnnotationAtPoint(canvasX, canvasY);
+      if (textAnnotation) {
+        // Cancel any open text input first
+        if (isTextInputVisible) {
+          cancelTextInput();
+        }
+
+        // Select and start dragging immediately
+        selectedTextId = textAnnotation.id;
+        isDraggingText = true;
+        draggedTextId = textAnnotation.id;
+        textDragStart = {
+          x: coords.clientX,
+          y: coords.clientY,
+          originalX: textAnnotation.points[0].x,
+          originalY: textAnnotation.points[0].y
+        };
+        return;
+      }
+
+      // Clicking elsewhere - deselect and show text input for new text
+      selectedTextId = null;
+      textInputPosition = {
+        x: coords.clientX - rect.left,
+        y: coords.clientY - rect.top,
+        imageX: imagePoint.x,
+        imageY: imagePoint.y
+      };
+      textInput = '';
+      isTextInputVisible = true;
+      // Focus the input after it's rendered
+      setTimeout(() => {
+        textInputElement?.focus();
+      }, 10);
+      return;
+    }
 
     if (currentTool === 'eraser') {
       // Find and remove annotation at click point
@@ -236,6 +400,35 @@
   function handleMouseMove(event: MouseEvent | TouchEvent) {
     const coords = getEventCoords(event);
 
+    // Check hover state for text tool
+    if (currentTool === 'text' && canvas && !isDraggingText && !isPanning && !isResizingText) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      const canvasX = (coords.clientX - rect.left) * scaleX;
+      const canvasY = (coords.clientY - rect.top) * scaleY;
+
+      // Check if hovering over resize handle
+      if (selectedTextBounds) {
+        const handleSize = 12;
+        const handleX = selectedTextBounds.x + selectedTextBounds.width;
+        const handleY = selectedTextBounds.y + selectedTextBounds.height;
+        if (canvasX >= handleX - handleSize && canvasX <= handleX + handleSize &&
+            canvasY >= handleY - handleSize && canvasY <= handleY + handleSize) {
+          isHoveringText = false;
+          isHoveringResizeHandle = true;
+          return;
+        }
+      }
+      isHoveringResizeHandle = false;
+
+      const textAnnotation = findTextAnnotationAtPoint(canvasX, canvasY);
+      isHoveringText = textAnnotation !== null;
+    } else if (currentTool !== 'text') {
+      isHoveringText = false;
+      isHoveringResizeHandle = false;
+    }
+
     // Handle panning
     if (isPanning && panStart && onViewportChange) {
       event.preventDefault();
@@ -245,6 +438,48 @@
         offsetX: panStart.offsetX + dx,
         offsetY: panStart.offsetY + dy
       });
+      return;
+    }
+
+    // Handle text resizing
+    if (isResizingText && selectedTextId && textResizeStart) {
+      event.preventDefault();
+      const dy = coords.clientY - textResizeStart.y;
+      // Scale: moving down increases size, moving up decreases
+      const scaleFactor = 1 + dy / 100;
+      const newFontSize = Math.max(12, Math.min(300, textResizeStart.originalFontSize * scaleFactor));
+
+      const updatedAnnotations = annotations.map(a => {
+        if (a.id === selectedTextId) {
+          return { ...a, fontSize: Math.round(newFontSize) };
+        }
+        return a;
+      });
+      onUpdate(updatedAnnotations);
+      return;
+    }
+
+    // Handle text dragging
+    if (isDraggingText && draggedTextId && textDragStart && canvas) {
+      event.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      const totalScale = viewport.scale * viewport.zoom;
+
+      // Calculate delta in screen pixels, then convert to image coordinates
+      const dx = (coords.clientX - textDragStart.x) * (canvas.width / rect.width) / totalScale;
+      const dy = (coords.clientY - textDragStart.y) * (canvas.height / rect.height) / totalScale;
+
+      // Update the annotation position
+      const updatedAnnotations = annotations.map(a => {
+        if (a.id === draggedTextId) {
+          return {
+            ...a,
+            points: [{ x: textDragStart.originalX + dx, y: textDragStart.originalY + dy }]
+          };
+        }
+        return a;
+      });
+      onUpdate(updatedAnnotations);
       return;
     }
 
@@ -344,6 +579,21 @@
       return;
     }
 
+    // Stop text resizing
+    if (isResizingText) {
+      isResizingText = false;
+      textResizeStart = null;
+      return;
+    }
+
+    // Stop text dragging
+    if (isDraggingText) {
+      isDraggingText = false;
+      draggedTextId = null;
+      textDragStart = null;
+      return;
+    }
+
     if (!isDrawing || !currentAnnotation) {
       isDrawing = false;
       return;
@@ -438,6 +688,31 @@
     strokeStartTime = 0;
   }
 
+  function findTextAnnotationAtPoint(canvasX: number, canvasY: number): Annotation | null {
+    const totalScale = viewport.scale * viewport.zoom;
+
+    for (let i = annotations.length - 1; i >= 0; i--) {
+      const annotation = annotations[i];
+      if (annotation.type !== 'text' || !annotation.text) continue;
+
+      const points = annotation.points.map(p => toCanvasCoords(p)).filter(Boolean) as { x: number; y: number }[];
+      if (points.length === 0) continue;
+
+      const fontSize = (annotation.fontSize ?? 48) * totalScale;
+      const textWidth = calculateTextWidth(annotation.text, fontSize);
+      const textHeight = fontSize;
+      const textX = points[0].x;
+      const textY = points[0].y;
+
+      if (canvasX >= textX - 5 && canvasX <= textX + textWidth + 5 &&
+          canvasY >= textY - 5 && canvasY <= textY + textHeight + 5) {
+        return annotation;
+      }
+    }
+
+    return null;
+  }
+
   function findAnnotationAtPoint(canvasX: number, canvasY: number): number {
     const hitRadius = 10;
 
@@ -471,6 +746,20 @@
 
           if (nearTop || nearBottom || nearLeft || nearRight) return i;
         }
+      } else if (annotation.type === 'text' && annotation.text) {
+        if (points.length >= 1) {
+          const totalScale = viewport.scale * viewport.zoom;
+          const fontSize = (annotation.fontSize ?? 48) * totalScale;
+          const textWidth = calculateTextWidth(annotation.text, fontSize);
+          const textHeight = fontSize;
+          const textX = points[0].x;
+          const textY = points[0].y;
+
+          if (canvasX >= textX - hitRadius && canvasX <= textX + textWidth + hitRadius &&
+              canvasY >= textY - hitRadius && canvasY <= textY + textHeight + hitRadius) {
+            return i;
+          }
+        }
       }
     }
 
@@ -497,6 +786,109 @@
 
   function handleClearAll() {
     onUpdate([]);
+  }
+
+  function confirmTextInput() {
+    if (textInput.trim() && textInputPosition) {
+      const newAnnotation: Annotation = {
+        id: `annotation-${Date.now()}`,
+        type: 'text',
+        color: currentColor,
+        strokeWidth: strokeWidth,
+        points: [{ x: textInputPosition.imageX, y: textInputPosition.imageY }],
+        shadow: shadowEnabled,
+        text: textInput.trim(),
+        fontSize: fontSize
+      };
+      onUpdate([...annotations, newAnnotation]);
+    }
+    cancelTextInput();
+  }
+
+  function cancelTextInput() {
+    isTextInputVisible = false;
+    textInput = '';
+    textInputPosition = null;
+  }
+
+  function handleTextInputKeydown(event: KeyboardEvent) {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (editingTextId) {
+        confirmTextEdit();
+      } else {
+        confirmTextInput();
+      }
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      if (editingTextId) {
+        cancelTextEdit();
+      } else {
+        cancelTextInput();
+      }
+    }
+  }
+
+  function startTextEdit(annotation: Annotation) {
+    if (!annotation.text) return;
+    editingTextId = annotation.id;
+    editingTextValue = annotation.text;
+    isTextInputVisible = true;
+
+    // Position the input at the text location
+    const point = toCanvasCoords(annotation.points[0]);
+    if (point && canvas) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = rect.width / canvas.width;
+      const scaleY = rect.height / canvas.height;
+      textInputPosition = {
+        x: point.x * scaleX,
+        y: point.y * scaleY,
+        imageX: annotation.points[0].x,
+        imageY: annotation.points[0].y
+      };
+    }
+
+    setTimeout(() => {
+      textInputElement?.focus();
+      textInputElement?.select();
+    }, 10);
+  }
+
+  function confirmTextEdit() {
+    if (editingTextId && editingTextValue.trim()) {
+      const updatedAnnotations = annotations.map(a => {
+        if (a.id === editingTextId) {
+          return { ...a, text: editingTextValue.trim() };
+        }
+        return a;
+      });
+      onUpdate(updatedAnnotations);
+    }
+    cancelTextEdit();
+  }
+
+  function cancelTextEdit() {
+    editingTextId = null;
+    editingTextValue = '';
+    isTextInputVisible = false;
+    textInputPosition = null;
+  }
+
+  function handleDoubleClick(event: MouseEvent) {
+    if (currentTool !== 'text' || !canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    const canvasX = (event.clientX - rect.left) * scaleX;
+    const canvasY = (event.clientY - rect.top) * scaleY;
+
+    const textAnnotation = findTextAnnotationAtPoint(canvasX, canvasY);
+    if (textAnnotation) {
+      event.preventDefault();
+      startTextEdit(textAnnotation);
+    }
   }
 
   function handleTouchStart(event: TouchEvent) {
@@ -885,7 +1277,13 @@
   bind:this={containerElement}
   class="annotation-tool-overlay"
   class:panning={isSpaceHeld || isTwoFingerTouch}
+  class:dragging-text={isDraggingText}
+  class:text-mode={currentTool === 'text'}
+  class:hovering-text={isHoveringText}
+  class:hovering-resize={isHoveringResizeHandle}
+  class:resizing-text={isResizingText}
   onmousedown={handleMouseDown}
+  ondblclick={handleDoubleClick}
   role="button"
   tabindex="-1"
 >
@@ -904,15 +1302,26 @@
       {@const shadowFilter = annotation.shadow ? 'url(#annotation-shadow)' : 'none'}
 
       {#if annotation.type === 'pen' && points.length > 0}
-        <path
-          d={generateSmoothPath(points)}
-          fill="none"
-          stroke={annotation.color}
-          stroke-width={annotation.strokeWidth * totalScale}
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          filter={shadowFilter}
-        />
+        {#if points.length === 1}
+          <!-- Single point - draw a dot -->
+          <circle
+            cx={points[0].x}
+            cy={points[0].y}
+            r={annotation.strokeWidth * totalScale / 2}
+            fill={annotation.color}
+            filter={shadowFilter}
+          />
+        {:else}
+          <path
+            d={generateSmoothPath(points)}
+            fill="none"
+            stroke={annotation.color}
+            stroke-width={annotation.strokeWidth * totalScale}
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            filter={shadowFilter}
+          />
+        {/if}
       {:else if annotation.type === 'brush' && points.length >= 1}
         {@const brushPoints = annotation.points.map(p => {
           const canvasCoords = toCanvasCoords(p);
@@ -969,6 +1378,18 @@
           stroke-width={annotation.strokeWidth * totalScale}
           filter={shadowFilter}
         />
+      {:else if annotation.type === 'text' && points.length >= 1 && annotation.text && annotation.id !== editingTextId}
+        {@const scaledFontSize = (annotation.fontSize ?? 48) * totalScale}
+        <text
+          x={points[0].x}
+          y={points[0].y + scaledFontSize * 0.88}
+          fill={annotation.color}
+          font-size={scaledFontSize}
+          font-family="sans-serif"
+          font-weight="bold"
+          dominant-baseline="alphabetic"
+          filter={shadowFilter}
+        >{annotation.text}</text>
       {/if}
     {/each}
 
@@ -979,15 +1400,26 @@
       {@const currentShadowFilter = currentAnnotationCanvas.shadow ? 'url(#annotation-shadow)' : 'none'}
 
       {#if currentAnnotationCanvas.type === 'pen'}
-        <path
-          d={generateSmoothPath(points)}
-          fill="none"
-          stroke={currentAnnotationCanvas.color}
-          stroke-width={currentAnnotationCanvas.strokeWidth * totalScale}
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          filter={currentShadowFilter}
-        />
+        {#if points.length === 1}
+          <!-- Single point - draw a dot -->
+          <circle
+            cx={points[0].x}
+            cy={points[0].y}
+            r={currentAnnotationCanvas.strokeWidth * totalScale / 2}
+            fill={currentAnnotationCanvas.color}
+            filter={currentShadowFilter}
+          />
+        {:else}
+          <path
+            d={generateSmoothPath(points)}
+            fill="none"
+            stroke={currentAnnotationCanvas.color}
+            stroke-width={currentAnnotationCanvas.strokeWidth * totalScale}
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            filter={currentShadowFilter}
+          />
+        {/if}
       {:else if currentAnnotationCanvas.type === 'brush' && points.length >= 1}
         <path
           d={generateBrushPath(points, currentAnnotationCanvas.strokeWidth, totalScale)}
@@ -1041,7 +1473,70 @@
         />
       {/if}
     {/if}
+
+    <!-- Selection box and resize handle for selected text -->
+    {#if selectedTextBounds}
+      {@const padding = 4}
+      {@const handleSize = 10}
+      <rect
+        x={selectedTextBounds.x - padding}
+        y={selectedTextBounds.y - padding}
+        width={selectedTextBounds.width + padding * 2}
+        height={selectedTextBounds.height + padding * 2}
+        fill="none"
+        stroke="var(--primary-color, #63b97b)"
+        stroke-width="2"
+        stroke-dasharray="4 2"
+      />
+      <!-- Resize handle (bottom-right corner) -->
+      <rect
+        x={selectedTextBounds.x + selectedTextBounds.width - handleSize / 2 + padding}
+        y={selectedTextBounds.y + selectedTextBounds.height - handleSize / 2 + padding}
+        width={handleSize}
+        height={handleSize}
+        fill="var(--primary-color, #63b97b)"
+        stroke="#fff"
+        stroke-width="1"
+        rx="2"
+        class="resize-handle"
+      />
+    {/if}
   </svg>
+
+  <!-- Text input overlay -->
+  {#if isTextInputVisible && textInputPosition}
+    {@const editingAnnotation = editingTextId ? annotations.find(a => a.id === editingTextId) : null}
+    {@const inputColor = editingAnnotation?.color ?? currentColor}
+    {@const inputFontSize = (editingAnnotation?.fontSize ?? fontSize) * viewport.scale * viewport.zoom}
+    <div
+      class="text-input-container"
+      style="left: {textInputPosition.x}px; top: {textInputPosition.y}px;"
+    >
+      {#if editingTextId}
+        <input
+          bind:this={textInputElement}
+          type="text"
+          class="text-input"
+          bind:value={editingTextValue}
+          onkeydown={handleTextInputKeydown}
+          onblur={confirmTextEdit}
+          placeholder={$_('annotate.textPlaceholder')}
+          style="color: {inputColor}; font-size: {inputFontSize}px;"
+        />
+      {:else}
+        <input
+          bind:this={textInputElement}
+          type="text"
+          class="text-input"
+          bind:value={textInput}
+          onkeydown={handleTextInputKeydown}
+          onblur={confirmTextInput}
+          placeholder={$_('annotate.textPlaceholder')}
+          style="color: {inputColor}; font-size: {inputFontSize}px;"
+        />
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <!-- Control panel -->
@@ -1091,6 +1586,14 @@
         >
           <Square size={20} />
         </button>
+        <button
+          class="tool-btn"
+          class:active={currentTool === 'text'}
+          onclick={() => currentTool = 'text'}
+          title={$_('annotate.text')}
+        >
+          <Type size={20} />
+        </button>
       </div>
     </div>
 
@@ -1116,20 +1619,39 @@
       </div>
     </div>
 
-    <!-- Stroke width -->
-    <div class="control-group">
-      <label for="stroke-width">
-        <span>{$_('annotate.strokeWidth')}</span>
-        <span class="value">{strokeWidth}px</span>
-      </label>
-      <input
-        id="stroke-width"
-        type="range"
-        min="5"
-        max="100"
-        bind:value={strokeWidth}
-      />
-    </div>
+    <!-- Stroke width (hidden for text tool) -->
+    {#if currentTool !== 'text'}
+      <div class="control-group">
+        <label for="stroke-width">
+          <span>{$_('annotate.strokeWidth')}</span>
+          <span class="value">{strokeWidth}px</span>
+        </label>
+        <input
+          id="stroke-width"
+          type="range"
+          min="5"
+          max="100"
+          bind:value={strokeWidth}
+        />
+      </div>
+    {/if}
+
+    <!-- Font size (text tool only) -->
+    {#if currentTool === 'text'}
+      <div class="control-group">
+        <label for="font-size">
+          <span>{$_('annotate.fontSize')}</span>
+          <span class="value">{fontSize}px</span>
+        </label>
+        <input
+          id="font-size"
+          type="range"
+          min="12"
+          max="200"
+          bind:value={fontSize}
+        />
+      </div>
+    {/if}
 
     <!-- Shadow toggle -->
     <div class="control-group">
@@ -1173,6 +1695,20 @@
 
     &.panning:active {
       cursor: grabbing;
+    }
+
+    &.text-mode {
+      cursor: text;
+    }
+
+    &.hovering-text,
+    &.dragging-text {
+      cursor: move;
+    }
+
+    &.hovering-resize,
+    &.resizing-text {
+      cursor: nwse-resize;
     }
   }
 
@@ -1405,5 +1941,27 @@
 
   .toggle-btn.active .toggle-thumb {
     transform: translateX(20px);
+  }
+
+  .text-input-container {
+    position: absolute;
+    z-index: 10;
+    transform: translateY(-50%);
+  }
+
+  .text-input {
+    background: rgba(0, 0, 0, 0.7);
+    border: 2px solid var(--primary-color, #63b97b);
+    border-radius: 4px;
+    padding: 4px 8px;
+    min-width: 100px;
+    max-width: 400px;
+    font-weight: bold;
+    outline: none;
+
+    &::placeholder {
+      color: rgba(255, 255, 255, 0.5);
+      font-weight: normal;
+    }
   }
 </style>

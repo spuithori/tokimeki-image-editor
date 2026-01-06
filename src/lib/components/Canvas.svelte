@@ -16,6 +16,7 @@
     blurAreas?: BlurArea[];
     stampAreas?: StampArea[];
     annotations?: Annotation[];
+    skipAnnotations?: boolean; // Skip rendering annotations (when annotation tool is active)
     onZoom?: (delta: number, centerX?: number, centerY?: number) => void;
     onViewportChange?: (viewportUpdate: Partial<Viewport>) => void;
   }
@@ -32,6 +33,7 @@
     blurAreas = [],
     stampAreas = [],
     annotations = [],
+    skipAnnotations = false,
     onZoom,
     onViewportChange
   }: Props = $props();
@@ -229,7 +231,8 @@
     );
 
     // Render stamps and annotations on overlay canvas
-    if (overlayCanvasElement && (stampAreas.length > 0 || annotations.length > 0)) {
+    const shouldRenderAnnotations = !skipAnnotations && annotations.length > 0;
+    if (overlayCanvasElement && (stampAreas.length > 0 || shouldRenderAnnotations)) {
       ensureCanvasSize(overlayCanvasElement, width, height);
 
       // Clear overlay canvas
@@ -239,7 +242,7 @@
         if (stampAreas.length > 0) {
           applyStamps(overlayCanvasElement, currentImage, viewport, stampAreas, cropArea);
         }
-        if (annotations.length > 0) {
+        if (shouldRenderAnnotations) {
           applyAnnotations(overlayCanvasElement, currentImage, viewport, annotations, cropArea);
         }
       }
@@ -298,7 +301,7 @@
       cropArea,
       blurAreas,
       stampAreas,
-      annotations
+      skipAnnotations ? [] : annotations
     );
   }
 

@@ -44,7 +44,7 @@ export interface StampArea {
   stampContent: string;
 }
 
-export type AnnotationType = 'pen' | 'brush' | 'arrow' | 'rectangle';
+export type AnnotationType = 'pen' | 'brush' | 'arrow' | 'rectangle' | 'text';
 
 export interface AnnotationPoint {
   x: number; // image coordinates
@@ -57,8 +57,11 @@ export interface Annotation {
   type: AnnotationType;
   color: string;
   strokeWidth: number; // in image coordinates (base width for brush)
-  points: AnnotationPoint[]; // For pen/brush: all points, for arrow/rectangle: [start, end]
+  points: AnnotationPoint[]; // For pen/brush: all points, for arrow/rectangle: [start, end], for text: [position]
   shadow: boolean; // Enable drop shadow
+  // Text-specific properties
+  text?: string; // Text content for text annotations
+  fontSize?: number; // Font size in image coordinates
 }
 
 export interface TransformState {

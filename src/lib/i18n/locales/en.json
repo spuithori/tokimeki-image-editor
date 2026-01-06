@@ -85,9 +85,12 @@
     "eraser": "Eraser",
     "arrow": "Arrow",
     "rectangle": "Rectangle",
+    "text": "Text",
     "color": "Color",
     "strokeWidth": "Stroke Width",
+    "fontSize": "Font Size",
     "shadow": "Shadow",
-    "clearAll": "Clear All"
+    "clearAll": "Clear All",
+    "textPlaceholder": "Enter text..."
   }
 }

@@ -880,6 +880,16 @@ export function applyAnnotations(
       ctx.beginPath();
       ctx.roundRect(rectX, rectY, rectWidth, rectHeight, cornerRadius);
       ctx.stroke();
+
+    } else if (annotation.type === 'text' && annotation.points.length >= 1 && annotation.text) {
+      // Draw text annotation
+      const pos = toCanvasCoords(annotation.points[0].x, annotation.points[0].y);
+      const scaledFontSize = (annotation.fontSize ?? 48) * totalScale;
+
+      ctx.font = `bold ${scaledFontSize}px sans-serif`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(annotation.text, pos.x, pos.y + scaledFontSize * 0.88);
     }
 
     ctx.restore();

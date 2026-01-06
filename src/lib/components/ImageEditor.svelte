@@ -550,6 +550,7 @@
           blurAreas={state.blurAreas}
           stampAreas={state.stampAreas}
           annotations={state.annotations}
+          skipAnnotations={state.mode === 'annotate'}
           onZoom={handleZoom}
           onViewportChange={handleViewportChange}
         />
