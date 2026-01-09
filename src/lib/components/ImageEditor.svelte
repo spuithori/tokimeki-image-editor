@@ -3,9 +3,36 @@
   import { _ } from 'svelte-i18n';
   import { Redo2, RotateCcw, Undo2 } from 'lucide-svelte';
   import type { EditorMode, EditorState, CropArea, TransformState, Viewport, AdjustmentsState, BlurArea, Annotation } from '../types';
-  import { loadImage, calculateFitScale, exportCanvas, downloadImage, applyTransform, applyTransformWithWebGPU } from '../utils/canvas';
-  import { createEmptyHistory, createSnapshot, addToHistory, undo, redo, canUndo, canRedo } from '../utils/history';
-  import { createDefaultAdjustments } from '../utils/adjustments';
+  import {
+    createEditorState,
+    loadImageFromFile,
+    loadImageFromUrl,
+    applyImageToState,
+    setMode,
+    applyCrop,
+    applyTransformUpdate,
+    applyAdjustmentsUpdate,
+    applyFilter,
+    setBlurAreas,
+    setStampAreas,
+    setAnnotations,
+    setViewport,
+    setExportOptions,
+    resetState,
+    handleZoom as coreHandleZoom,
+    saveToHistory as coreSaveToHistory,
+    handleUndo as coreHandleUndo,
+    handleRedo as coreHandleRedo,
+    canUndo,
+    canRedo,
+    getKeyboardAction,
+    applyKeyboardAction,
+    exportImage,
+    downloadExportedImage,
+    getDroppedFile,
+    getInputFile,
+    handleDragOver
+  } from '../utils/editor-core';
   import Toolbar from './Toolbar.svelte';
   import Canvas from './Canvas.svelte';
   import CropTool from './CropTool.svelte';
@@ -44,44 +71,12 @@
     onExport
   }: Props = $props();
 
-  let state = $state<EditorState>({
-    mode: null,
-    imageData: {
-      original: null,
-      current: null,
-      width: 0,
-      height: 0
-    },
-    cropArea: null,
-    transform: {
-      rotation: 0,
-      flipHorizontal: false,
-      flipVertical: false,
-      scale: 1
-    },
-    adjustments: createDefaultAdjustments(),
-    exportOptions: {
-      format: 'png',
-      quality: 0.9
-    },
-    viewport: {
-      zoom: 1,
-      offsetX: 0,
-      offsetY: 0,
-      scale: 1
-    },
-    history: createEmptyHistory(),
-    blurAreas: [],
-    stampAreas: [],
-    annotations: []
-  });
-
+  let state = $state<EditorState>(createEditorState());
   let canvasElement = $state<HTMLCanvasElement | null>(null);
   let fileInput = $state<HTMLInputElement | null>(null);
   let adjustmentThrottleTimer: number | null = null;
   let pendingAdjustments: Partial<AdjustmentsState> | null = null;
   let lastInitialImage = $state<File | string | undefined>(undefined);
-
   let clientWidth = $state<number | undefined>(undefined);
   let clientHeight = $state<number | undefined>(undefined);
 
@@ -91,50 +86,13 @@
       lastInitialImage = initialImage;
 
       if (typeof initialImage === 'string') {
-        // URL or Data URL
-        const img = new Image();
-        img.onload = () => {
-          state.imageData.original = img;
-          state.imageData.current = img;
-          state.imageData.width = img.width;
-          state.imageData.height = img.height;
-
-          // Calculate fit scale
-          const fitScale = calculateFitScale(img.width, img.height, width, height);
-
-          // Reset state
-          state.cropArea = null;
-          state.transform = {
-            rotation: 0,
-            flipHorizontal: false,
-            flipVertical: false,
-            scale: 1
-          };
-          state.viewport = {
-            zoom: 1,
-            offsetX: 0,
-            offsetY: 0,
-            scale: fitScale
-          };
-          state.blurAreas = [];
-          state.stampAreas = [];
-          state.annotations = [];
-
-          // Reset history and save initial state
-          state.history = createEmptyHistory();
-          saveToHistory();
-
-          // Apply initial mode if specified
-          if (initialMode) {
-            state.mode = initialMode;
-          }
-        };
-        img.onerror = (error) => {
-          console.error('Failed to load initial image:', error);
-        };
-        img.src = initialImage;
+        loadImageFromUrl(initialImage, width, height)
+          .then(result => {
+            state = { ...state, ...applyImageToState(result, initialMode) };
+            state = coreSaveToHistory(state);
+          })
+          .catch(error => console.error('Failed to load initial image:', error));
       } else {
-        // File object
         handleFileUpload(initialImage);
       }
     }
@@ -142,113 +100,47 @@
 
   async function handleFileUpload(file: File) {
     try {
-      const img = await loadImage(file);
-      state.imageData.original = img;
-      state.imageData.current = img;
-      state.imageData.width = img.width;
-      state.imageData.height = img.height;
-
-      // Calculate fit scale
-      const fitScale = calculateFitScale(img.width, img.height, width, height);
-
-      // Reset state
-      state.cropArea = null;
-      state.transform = {
-        rotation: 0,
-        flipHorizontal: false,
-        flipVertical: false,
-        scale: 1
-      };
-      state.viewport = {
-        zoom: 1,
-        offsetX: 0,
-        offsetY: 0,
-        scale: fitScale
-      };
-      state.blurAreas = [];
-      state.stampAreas = [];
-      state.annotations = [];
-
-      // Reset history and save initial state
-      state.history = createEmptyHistory();
-      saveToHistory();
-
-      // Apply initial mode if specified
-      if (initialMode) {
-        state.mode = initialMode;
-      }
+      const result = await loadImageFromFile(file, width, height);
+      state = { ...state, ...applyImageToState(result, initialMode) };
+      state = coreSaveToHistory(state);
     } catch (error) {
       console.error('Failed to load image:', error);
     }
   }
 
   function handleDrop(event: DragEvent) {
-    event.preventDefault();
-    const files = event.dataTransfer?.files;
-    if (files && files.length > 0) {
-      handleFileUpload(files[0]);
-    }
-  }
-
-  function handleDragOver(event: DragEvent) {
-    event.preventDefault();
+    const file = getDroppedFile(event);
+    if (file) handleFileUpload(file);
   }
 
   function handleFileInputChange(event: Event) {
-    const target = event.target as HTMLInputElement;
-    if (target.files && target.files.length > 0) {
-      handleFileUpload(target.files[0]);
-    }
+    const file = getInputFile(event);
+    if (file) handleFileUpload(file);
   }
 
   function handleModeChange(mode: EditorMode) {
-    state.mode = mode;
+    state = setMode(state, mode);
   }
 
   function handleCropApply(cropArea: CropArea) {
     if (!canvasElement || !state.imageData.original) return;
-
-    state.cropArea = cropArea;
-    state.mode = null;
-
-    // Calculate scale to fit cropped area to canvas (fill canvas width/height)
-    const fitScale = calculateFitScale(cropArea.width, cropArea.height, width, height);
-
-    // Reset viewport to fit the cropped area
-    state.viewport = {
-      zoom: 1,
-      offsetX: 0,
-      offsetY: 0,
-      scale: fitScale
-    };
-
-    // Save to history
-    saveToHistory();
+    state = applyCrop(state, cropArea, width, height);
+    state = coreSaveToHistory(state);
   }
 
   function handleTransformChange(transform: Partial<TransformState>) {
-    state.transform = { ...state.transform, ...transform };
-
-    // Save to history
-    saveToHistory();
+    state = applyTransformUpdate(state, transform);
+    state = coreSaveToHistory(state);
   }
 
   function handleAdjustmentsChange(adjustments: Partial<AdjustmentsState>) {
-    // Immediately update state for responsive UI
-    state.adjustments = { ...state.adjustments, ...adjustments };
-
-    // Store pending adjustments for history
+    state = applyAdjustmentsUpdate(state, adjustments);
     pendingAdjustments = { ...pendingAdjustments, ...adjustments };
 
-    // Clear existing timer
-    if (adjustmentThrottleTimer !== null) {
-      clearTimeout(adjustmentThrottleTimer);
-    }
-
-    // Only save to history after user stops adjusting (300ms delay)
+    if (adjustmentThrottleTimer !== null) clearTimeout(adjustmentThrottleTimer);
     adjustmentThrottleTimer = window.setTimeout(() => {
       if (pendingAdjustments !== null) {
-        saveToHistory();
+        state = coreSaveToHistory(state);
         pendingAdjustments = null;
       }
       adjustmentThrottleTimer = null;
@@ -256,173 +148,56 @@
   }
 
   function handleFilterApply(adjustments: AdjustmentsState) {
-    // Replace all adjustments with filter preset
-    state.adjustments = adjustments;
-
-    // Save to history immediately for filter changes
-    saveToHistory();
+    state = applyFilter(state, adjustments);
+    state = coreSaveToHistory(state);
   }
 
   function handleBlurAreasChange(blurAreas: BlurArea[]) {
-    state.blurAreas = blurAreas;
-    saveToHistory();
+    state = setBlurAreas(state, blurAreas);
+    state = coreSaveToHistory(state);
   }
 
   function handleStampAreasChange(stampAreas: StampArea[]) {
-    state.stampAreas = stampAreas;
-    saveToHistory();
+    state = setStampAreas(state, stampAreas);
+    state = coreSaveToHistory(state);
   }
 
   function handleAnnotationsChange(annotations: Annotation[]) {
-    state.annotations = annotations;
-    saveToHistory();
+    state = setAnnotations(state, annotations);
+    state = coreSaveToHistory(state);
   }
 
   async function handleExport() {
-    if (!state.imageData.original) return;
-
-    // Use WebGPU for export when available
-    const exportCanvas = await applyTransformWithWebGPU(
-      state.imageData.original,
-      state.transform,
-      state.adjustments,
-      state.cropArea,
-      state.blurAreas,
-      state.stampAreas,
-      state.annotations
-    );
-
-    const dataUrl = exportCanvas.toDataURL(
-      state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png',
-      state.exportOptions.quality
-    );
-    const filename = `edited-image-${Date.now()}.${state.exportOptions.format}`;
-
-    downloadImage(dataUrl, filename);
-
-    if (onExport) {
-      onExport(dataUrl);
-    }
+    await downloadExportedImage(state);
+    const result = await exportImage(state);
+    if (result && onExport) onExport(result.dataUrl);
   }
 
   async function handleComplete() {
-    if (!state.imageData.original || !onComplete) return;
-
-    // Use WebGPU for export when available
-    const exportCanvas = await applyTransformWithWebGPU(
-      state.imageData.original,
-      state.transform,
-      state.adjustments,
-      state.cropArea,
-      state.blurAreas,
-      state.stampAreas,
-      state.annotations
-    );
-
-    const format = state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png';
-    const dataUrl = exportCanvas.toDataURL(
-      state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png',
-      state.exportOptions.quality
-    );
-
-    // Convert to blob
-    exportCanvas.toBlob((blob) => {
-      if (blob) {
-        createImageBitmap(blob).then((bitmap) => {
-          onComplete(dataUrl, {
-            blob: blob,
-            width: bitmap.width,
-            height: bitmap.height
-          });
-
-          bitmap.close();
-        });
-      }
-    }, format, state.exportOptions.quality);
+    if (!onComplete) return;
+    const result = await exportImage(state);
+    if (result) onComplete(result.dataUrl, { blob: result.blob, width: result.width, height: result.height });
   }
 
   function handleCancel() {
-    if (onCancel) {
-      onCancel();
-    }
+    onCancel?.();
   }
 
   function handleReset() {
-    if (!state.imageData.original) return;
-
-    const fitScale = calculateFitScale(
-      state.imageData.original.width,
-      state.imageData.original.height,
-      width,
-      height
-    );
-
-    state.cropArea = null;
-    state.transform = {
-      rotation: 0,
-      flipHorizontal: false,
-      flipVertical: false,
-      scale: 1
-    };
-    state.viewport = {
-      zoom: 1,
-      offsetX: 0,
-      offsetY: 0,
-      scale: fitScale
-    };
+    state = resetState(state, width, height);
   }
 
   function handleZoom(delta: number, centerX?: number, centerY?: number) {
-    const oldZoom = state.viewport.zoom;
-    const newZoom = Math.max(0.1, Math.min(5, oldZoom + delta));
-
-    if (centerX !== undefined && centerY !== undefined && canvasElement) {
-      // Zoom towards cursor position
-      const rect = canvasElement.getBoundingClientRect();
-      const x = centerX - rect.left - width / 2;
-      const y = centerY - rect.top - height / 2;
-
-      const zoomRatio = newZoom / oldZoom;
-      state.viewport.offsetX = x - (x - state.viewport.offsetX) * zoomRatio;
-      state.viewport.offsetY = y - (y - state.viewport.offsetY) * zoomRatio;
-    }
-
-    state.viewport.zoom = newZoom;
-  }
-
-  function saveToHistory() {
-    const snapshot = createSnapshot(state.cropArea, state.transform, state.adjustments, state.viewport, state.blurAreas, state.stampAreas, state.annotations);
-    state.history = addToHistory(state.history, snapshot);
-  }
-
-  function applySnapshot(snapshot: any) {
-    if (!snapshot) return;
-    state.cropArea = snapshot.cropArea ? { ...snapshot.cropArea } : null;
-    state.transform = { ...snapshot.transform };
-    state.adjustments = { ...snapshot.adjustments };
-    state.viewport = { ...snapshot.viewport };
-    state.blurAreas = snapshot.blurAreas ? snapshot.blurAreas.map((area: any) => ({ ...area })) : [];
-    state.stampAreas = snapshot.stampAreas ? snapshot.stampAreas.map((area: any) => ({ ...area })) : [];
-    state.annotations = snapshot.annotations ? snapshot.annotations.map((a: any) => ({
-      ...a,
-      points: a.points.map((p: any) => ({ ...p }))
-    })) : [];
+    const canvasRect = canvasElement?.getBoundingClientRect();
+    state = coreHandleZoom(state, delta, width, height, centerX, centerY, canvasRect);
   }
 
   function handleUndo() {
-    const result = undo(state.history);
-    if (result.snapshot) {
-      state.history = result.history;
-      applySnapshot(result.snapshot);
-    }
+    state = coreHandleUndo(state);
   }
 
   function handleRedo() {
-    const result = redo(state.history);
-    if (result.snapshot) {
-      state.history = result.history;
-      applySnapshot(result.snapshot);
-    }
+    state = coreHandleRedo(state);
   }
 
   function openFileDialog() {
@@ -430,33 +205,12 @@
   }
 
   function handleViewportChange(viewportUpdate: Partial<Viewport>) {
-    state.viewport = { ...state.viewport, ...viewportUpdate };
+    state = setViewport(state, viewportUpdate);
   }
 
   function handleKeyDown(event: KeyboardEvent) {
-    // Check if input/textarea is focused
-    const target = event.target as HTMLElement;
-    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') {
-      return;
-    }
-
-    // Ctrl+Z or Cmd+Z for undo
-    if ((event.ctrlKey || event.metaKey) && event.key === 'z' && !event.shiftKey) {
-      event.preventDefault();
-      handleUndo();
-    }
-
-    // Ctrl+Shift+Z or Cmd+Shift+Z for redo
-    if ((event.ctrlKey || event.metaKey) && event.key === 'z' && event.shiftKey) {
-      event.preventDefault();
-      handleRedo();
-    }
-
-    // Also support Ctrl+Y for redo
-    if ((event.ctrlKey || event.metaKey) && event.key === 'y') {
-      event.preventDefault();
-      handleRedo();
-    }
+    const action = getKeyboardAction(event);
+    state = applyKeyboardAction(state, action);
   }
 </script>
 
@@ -475,7 +229,7 @@
       <div class="editor-history-controls">
         <button
                 class="editor-history-btn"
-                disabled={!canUndo(state.history)}
+                disabled={!canUndo(state)}
                 onclick={handleUndo}
                 title={$_('toolbar.undo')}
         >
@@ -484,7 +238,7 @@
 
         <button
                 class="editor-history-btn"
-                disabled={!canRedo(state.history)}
+                disabled={!canRedo(state)}
                 onclick={handleRedo}
                 title={$_('toolbar.redo')}
         >
@@ -638,8 +392,8 @@
     <Toolbar
       mode={state.mode}
       hasImage={!!state.imageData.original}
-      canUndo={canUndo(state.history)}
-      canRedo={canRedo(state.history)}
+      canUndo={canUndo(state)}
+      canRedo={canRedo(state)}
       isStandalone={isStandalone}
       onModeChange={handleModeChange}
       onReset={handleReset}

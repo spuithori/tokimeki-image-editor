@@ -11,3 +11,5 @@ vite.config.ts.timestamp-*
 .claude
 .idea
 dist
+src/routes/quick
+static/oekaki.png

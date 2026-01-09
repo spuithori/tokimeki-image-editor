@@ -42,6 +42,9 @@
   let initialPinchDistance = $state(0);
   let initialCropSize = $state<{ width: number; height: number } | null>(null);
 
+  // Track if crop area has been initialized (non-reactive to prevent re-initialization)
+  let cropAreaInitialized = false;
+
   // Helper to get coordinates from mouse or touch event
   function getEventCoords(event: MouseEvent | TouchEvent): { clientX: number; clientY: number } {
     if ('touches' in event && event.touches.length > 0) {
@@ -75,15 +78,18 @@
 
   onMount(() => {
     if (containerElement) {
+      // Add mouse event listener with capture to handle panning before SVG handles
+      containerElement.addEventListener('mousedown', handleContainerMouseDownCapture as any, { capture: true });
       // Add touch event listeners with passive: false to allow preventDefault
-      containerElement.addEventListener('touchstart', handleContainerTouchStartUnified as any, { passive: false });
+      containerElement.addEventListener('touchstart', handleContainerTouchStartUnified as any, { passive: false, capture: true });
       containerElement.addEventListener('touchmove', handleContainerTouchMoveUnified as any, { passive: false });
       containerElement.addEventListener('touchend', handleContainerTouchEndUnified as any, { passive: false });
     }
 
     return () => {
       if (containerElement) {
-        containerElement.removeEventListener('touchstart', handleContainerTouchStartUnified as any);
+        containerElement.removeEventListener('mousedown', handleContainerMouseDownCapture as any, { capture: true });
+        containerElement.removeEventListener('touchstart', handleContainerTouchStartUnified as any, { capture: true } as any);
         containerElement.removeEventListener('touchmove', handleContainerTouchMoveUnified as any);
         containerElement.removeEventListener('touchend', handleContainerTouchEndUnified as any);
       }
@@ -91,8 +97,9 @@
   });
 
   $effect(() => {
-    if (image) {
-      // Initialize crop area to full image size
+    if (image && !cropAreaInitialized) {
+      // Initialize crop area to full image size (only once per mount)
+      cropAreaInitialized = true;
       cropArea = {
         x: 0,
         y: 0,
@@ -125,6 +132,64 @@
     return 'touches' in event ? 20 : 6; // 20px for touch, 6px for mouse
   }
 
+  // Check if point is near any resize handle
+  function isNearResizeHandle(mouseX: number, mouseY: number, handleRadius: number): boolean {
+    if (!canvasCoords) return false;
+
+    const { x, y, width, height } = canvasCoords;
+    const handles = [
+      { cx: x, cy: y },                           // nw
+      { cx: x + width / 2, cy: y },               // n
+      { cx: x + width, cy: y },                   // ne
+      { cx: x + width, cy: y + height / 2 },      // e
+      { cx: x + width, cy: y + height },          // se
+      { cx: x + width / 2, cy: y + height },      // s
+      { cx: x, cy: y + height },                  // sw
+      { cx: x, cy: y + height / 2 },              // w
+    ];
+
+    for (const handle of handles) {
+      const distance = Math.sqrt((mouseX - handle.cx) ** 2 + (mouseY - handle.cy) ** 2);
+      if (distance <= handleRadius) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Capture phase handler - runs before SVG element handlers
+  function handleContainerMouseDownCapture(event: MouseEvent) {
+    if (!canvas || !canvasCoords) return;
+    if (event.button !== 0) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const mouseX = event.clientX - rect.left;
+    const mouseY = event.clientY - rect.top;
+
+    // Check if inside crop area rectangle
+    const isInsideCropArea =
+      mouseX >= canvasCoords.x &&
+      mouseX <= canvasCoords.x + canvasCoords.width &&
+      mouseY >= canvasCoords.y &&
+      mouseY <= canvasCoords.y + canvasCoords.height;
+
+    // Check if on a resize handle
+    const handleRadius = 6;
+    const isOnHandle = isNearResizeHandle(mouseX, mouseY, handleRadius);
+
+    // If outside crop area AND not on a handle, start panning
+    if (!isInsideCropArea && !isOnHandle) {
+      event.preventDefault();
+      event.stopPropagation();
+      isPanning = true;
+      isDragging = false;
+      isResizing = false;
+      resizeHandle = null;
+      initialCropArea = null;
+      lastPanPosition = { x: event.clientX, y: event.clientY };
+    }
+  }
+
   function handleContainerMouseDown(event: MouseEvent | TouchEvent) {
     if (!canvas || !canvasCoords) return;
 
@@ -151,7 +216,12 @@
 
     // If outside crop area, start panning the viewport
     event.preventDefault();
+    event.stopPropagation();
     isPanning = true;
+    isDragging = false;
+    isResizing = false;
+    resizeHandle = null;
+    initialCropArea = null;
     lastPanPosition = { x: coords.clientX, y: coords.clientY };
   }
 
@@ -524,7 +594,7 @@
     initialCropSize = null;
   }
 
-  // Unified touch handlers that delegate based on finger count
+  // Unified touch handlers that delegate based on finger count (runs in capture phase)
   function handleContainerTouchStartUnified(event: TouchEvent) {
     // Check if touch is on a button or interactive element
     const target = event.target as HTMLElement;
@@ -537,8 +607,35 @@
     if (event.touches.length === 2) {
       handlePinchZoomStart(event);
     } else if (event.touches.length === 1) {
-      // Single finger = pan viewport (if outside crop) or let SVG handle drag/resize (if inside)
-      handleContainerMouseDown(event);
+      // Check if touch is outside crop area and not on handle - if so, pan
+      if (!canvas || !canvasCoords) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const touch = event.touches[0];
+      const touchX = touch.clientX - rect.left;
+      const touchY = touch.clientY - rect.top;
+
+      const isInsideCropArea =
+        touchX >= canvasCoords.x &&
+        touchX <= canvasCoords.x + canvasCoords.width &&
+        touchY >= canvasCoords.y &&
+        touchY <= canvasCoords.y + canvasCoords.height;
+
+      const handleRadius = 20; // Larger for touch
+      const isOnHandle = isNearResizeHandle(touchX, touchY, handleRadius);
+
+      if (!isInsideCropArea && !isOnHandle) {
+        // Start panning
+        event.preventDefault();
+        event.stopPropagation();
+        isPanning = true;
+        isDragging = false;
+        isResizing = false;
+        resizeHandle = null;
+        initialCropArea = null;
+        lastPanPosition = { x: touch.clientX, y: touch.clientY };
+      }
+      // Otherwise, let the event continue to SVG elements
     }
   }
 
@@ -597,7 +694,6 @@
     class="crop-container"
     class:panning={isPanning}
     onwheel={handleWheel}
-    onmousedown={handleContainerMouseDown}
   >
   <svg
     class="crop-overlay"
