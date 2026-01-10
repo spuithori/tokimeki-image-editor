@@ -151,6 +151,24 @@ export function createPenAnnotation(
 }
 
 /**
+ * Create a new eraser stroke annotation
+ * Eraser strokes erase parts of other annotations when rendered
+ */
+export function createEraserStrokeAnnotation(
+  startPoint: AnnotationPoint,
+  strokeWidth: number
+): Annotation {
+  return {
+    id: `annotation-${Date.now()}`,
+    type: 'eraser-stroke',
+    color: '#000000', // Color doesn't matter for eraser
+    strokeWidth,
+    points: [startPoint],
+    shadow: false
+  };
+}
+
+/**
  * Create a new brush annotation with initial width
  */
 export function createBrushAnnotation(
@@ -633,4 +651,520 @@ export function generateBrushPath(
 
   path += ' Z';
   return path;
+}
+
+// ============================================
+// Flood Fill Algorithm
+// ============================================
+
+/**
+ * Result of flood fill operation
+ */
+export interface FloodFillResult {
+  mask: ImageData;
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+  pixelCount: number;
+}
+
+/**
+ * Dilate (expand) a binary mask to cover anti-aliased edges
+ * This helps eliminate gaps between fill and stroke boundaries
+ */
+function dilateMask(mask: ImageData, radius: number = 1): ImageData {
+  const width = mask.width;
+  const height = mask.height;
+  const srcData = mask.data;
+  const result = new ImageData(width, height);
+  const dstData = result.data;
+
+  // For each pixel, check if any neighbor within radius is filled
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const idx = (y * width + x) * 4;
+
+      // If already filled, copy it
+      if (srcData[idx + 3] > 0) {
+        dstData[idx] = 255;
+        dstData[idx + 1] = 255;
+        dstData[idx + 2] = 255;
+        dstData[idx + 3] = 255;
+        continue;
+      }
+
+      // Check neighbors within radius
+      let shouldFill = false;
+      outer: for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+
+          const nidx = (ny * width + nx) * 4;
+          if (srcData[nidx + 3] > 0) {
+            shouldFill = true;
+            break outer;
+          }
+        }
+      }
+
+      if (shouldFill) {
+        dstData[idx] = 255;
+        dstData[idx + 1] = 255;
+        dstData[idx + 2] = 255;
+        dstData[idx + 3] = 255;
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Perform flood fill operation on image data
+ * @param imageData - The image data to analyze
+ * @param startX - Starting X coordinate
+ * @param startY - Starting Y coordinate
+ * @param tolerance - Color tolerance (0-255)
+ * @returns Mask ImageData where filled pixels are white (255,255,255,255)
+ */
+export function performFloodFill(
+  imageData: ImageData,
+  startX: number,
+  startY: number,
+  tolerance: number = 32
+): FloodFillResult | null {
+  const width = imageData.width;
+  const height = imageData.height;
+  const data = imageData.data;
+
+  // Clamp start coordinates
+  const sx = Math.floor(Math.max(0, Math.min(width - 1, startX)));
+  const sy = Math.floor(Math.max(0, Math.min(height - 1, startY)));
+
+  // Get the target color at start position
+  const startIdx = (sy * width + sx) * 4;
+  const targetR = data[startIdx];
+  const targetG = data[startIdx + 1];
+  const targetB = data[startIdx + 2];
+  const targetA = data[startIdx + 3];
+
+  // Create mask (same size as image)
+  const mask = new ImageData(width, height);
+  const maskData = mask.data;
+
+  // Track visited pixels
+  const visited = new Uint8Array(width * height);
+
+  // Track bounds
+  let minX = width, minY = height, maxX = 0, maxY = 0;
+  let pixelCount = 0;
+
+  // Color matching function
+  const colorMatches = (idx: number): boolean => {
+    const dr = Math.abs(data[idx] - targetR);
+    const dg = Math.abs(data[idx + 1] - targetG);
+    const db = Math.abs(data[idx + 2] - targetB);
+    const da = Math.abs(data[idx + 3] - targetA);
+    return dr <= tolerance && dg <= tolerance && db <= tolerance && da <= tolerance;
+  };
+
+  // Scanline flood fill (more efficient than simple BFS)
+  const stack: Array<{ x: number; y: number }> = [{ x: sx, y: sy }];
+
+  while (stack.length > 0) {
+    const { x, y } = stack.pop()!;
+
+    // Skip if out of bounds or already visited
+    if (x < 0 || x >= width || y < 0 || y >= height) continue;
+    const visitIdx = y * width + x;
+    if (visited[visitIdx]) continue;
+
+    // Check if color matches
+    const pixelIdx = visitIdx * 4;
+    if (!colorMatches(pixelIdx)) continue;
+
+    // Find left boundary
+    let left = x;
+    while (left > 0) {
+      const checkIdx = y * width + (left - 1);
+      if (visited[checkIdx] || !colorMatches(checkIdx * 4)) break;
+      left--;
+    }
+
+    // Find right boundary
+    let right = x;
+    while (right < width - 1) {
+      const checkIdx = y * width + (right + 1);
+      if (visited[checkIdx] || !colorMatches(checkIdx * 4)) break;
+      right++;
+    }
+
+    // Fill the scanline and check rows above/below
+    let checkAbove = false;
+    let checkBelow = false;
+
+    for (let px = left; px <= right; px++) {
+      const idx = y * width + px;
+      visited[idx] = 1;
+
+      // Fill mask with white
+      const maskIdx = idx * 4;
+      maskData[maskIdx] = 255;
+      maskData[maskIdx + 1] = 255;
+      maskData[maskIdx + 2] = 255;
+      maskData[maskIdx + 3] = 255;
+
+      // Update bounds
+      if (px < minX) minX = px;
+      if (px > maxX) maxX = px;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      pixelCount++;
+
+      // Check above
+      if (y > 0) {
+        const aboveIdx = (y - 1) * width + px;
+        const aboveColorIdx = aboveIdx * 4;
+        if (!visited[aboveIdx] && colorMatches(aboveColorIdx)) {
+          if (!checkAbove) {
+            stack.push({ x: px, y: y - 1 });
+            checkAbove = true;
+          }
+        } else {
+          checkAbove = false;
+        }
+      }
+
+      // Check below
+      if (y < height - 1) {
+        const belowIdx = (y + 1) * width + px;
+        const belowColorIdx = belowIdx * 4;
+        if (!visited[belowIdx] && colorMatches(belowColorIdx)) {
+          if (!checkBelow) {
+            stack.push({ x: px, y: y + 1 });
+            checkBelow = true;
+          }
+        } else {
+          checkBelow = false;
+        }
+      }
+    }
+  }
+
+  if (pixelCount === 0) return null;
+
+  // Apply dilation to cover anti-aliased edges and eliminate gaps
+  const dilatedMask = dilateMask(mask, 1);
+
+  return {
+    mask: dilatedMask,
+    bounds: { minX: Math.max(0, minX - 1), minY: Math.max(0, minY - 1), maxX: Math.min(width - 1, maxX + 1), maxY: Math.min(height - 1, maxY + 1) },
+    pixelCount
+  };
+}
+
+/**
+ * Get image data from an HTMLImageElement
+ */
+export function getImageDataFromImage(
+  image: HTMLImageElement
+): ImageData {
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(image, 0, 0);
+  return ctx.getImageData(0, 0, image.width, image.height);
+}
+
+/**
+ * Get image data with existing annotations composited
+ * This allows flood fill to respect pen/brush strokes as boundaries
+ */
+export function getCompositeImageData(
+  image: HTMLImageElement,
+  annotations: Annotation[]
+): ImageData {
+  const canvas = document.createElement('canvas');
+  canvas.width = image.width;
+  canvas.height = image.height;
+  const ctx = canvas.getContext('2d')!;
+
+  // Draw background image
+  ctx.drawImage(image, 0, 0);
+
+  // Draw existing annotations (pen, brush, fill)
+  for (const annotation of annotations) {
+    if (annotation.points.length === 0) continue;
+
+    ctx.save();
+
+    if (annotation.type === 'pen') {
+      ctx.strokeStyle = annotation.color;
+      ctx.lineWidth = annotation.strokeWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      if (annotation.points.length === 1) {
+        ctx.fillStyle = annotation.color;
+        ctx.beginPath();
+        ctx.arc(annotation.points[0].x, annotation.points[0].y, annotation.strokeWidth / 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(annotation.points[0].x, annotation.points[0].y);
+
+        for (let i = 1; i < annotation.points.length - 1; i++) {
+          const p0 = annotation.points[i];
+          const p1 = annotation.points[i + 1];
+          const midX = (p0.x + p1.x) / 2;
+          const midY = (p0.y + p1.y) / 2;
+          ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
+        }
+
+        const lastPoint = annotation.points[annotation.points.length - 1];
+        ctx.lineTo(lastPoint.x, lastPoint.y);
+        ctx.stroke();
+      }
+    } else if (annotation.type === 'brush') {
+      ctx.fillStyle = annotation.color;
+
+      if (annotation.points.length === 1) {
+        const point = annotation.points[0];
+        const radius = (point.width ?? annotation.strokeWidth) / 2;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        for (let i = 0; i < annotation.points.length - 1; i++) {
+          const p0 = annotation.points[i];
+          const p1 = annotation.points[i + 1];
+          const r0 = (p0.width ?? annotation.strokeWidth) / 2;
+          const r1 = (p1.width ?? annotation.strokeWidth) / 2;
+
+          const dx = p1.x - p0.x;
+          const dy = p1.y - p0.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len === 0) continue;
+
+          const nx = -dy / len;
+          const ny = dx / len;
+
+          ctx.beginPath();
+          ctx.moveTo(p0.x + nx * r0, p0.y + ny * r0);
+          ctx.lineTo(p1.x + nx * r1, p1.y + ny * r1);
+          ctx.lineTo(p1.x - nx * r1, p1.y - ny * r1);
+          ctx.lineTo(p0.x - nx * r0, p0.y - ny * r0);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(p0.x, p0.y, r0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        const lastPoint = annotation.points[annotation.points.length - 1];
+        const lastRadius = (lastPoint.width ?? annotation.strokeWidth) / 2;
+        ctx.beginPath();
+        ctx.arc(lastPoint.x, lastPoint.y, lastRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (annotation.type === 'fill' && annotation.fillMask) {
+      // Apply fill mask
+      const mask = annotation.fillMask;
+      const maskData = mask.data;
+
+      // Parse fill color
+      const color = annotation.color;
+      let r = 0, g = 0, b = 0;
+      if (color.startsWith('#')) {
+        const hex = color.slice(1);
+        if (hex.length === 3) {
+          r = parseInt(hex[0] + hex[0], 16);
+          g = parseInt(hex[1] + hex[1], 16);
+          b = parseInt(hex[2] + hex[2], 16);
+        } else if (hex.length === 6) {
+          r = parseInt(hex.slice(0, 2), 16);
+          g = parseInt(hex.slice(2, 4), 16);
+          b = parseInt(hex.slice(4, 6), 16);
+        }
+      }
+
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+
+      for (let i = 0; i < maskData.length; i += 4) {
+        if (maskData[i + 3] > 0) {
+          data[i] = r;
+          data[i + 1] = g;
+          data[i + 2] = b;
+          data[i + 3] = 255;
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    ctx.restore();
+  }
+
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+/**
+ * Get image data with only annotations (ignoring background image)
+ * Background is filled with white, annotations are drawn on top
+ * This allows flood fill to only consider annotation strokes as boundaries
+ */
+export function getAnnotationOnlyImageData(
+  width: number,
+  height: number,
+  annotations: Annotation[]
+): ImageData {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d')!;
+
+  // Fill with white background (so flood fill works on empty areas)
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+
+  // Draw existing annotations (pen, brush, fill) - same as getCompositeImageData but without background image
+  for (const annotation of annotations) {
+    if (annotation.points.length === 0) continue;
+
+    ctx.save();
+
+    if (annotation.type === 'pen') {
+      ctx.strokeStyle = annotation.color;
+      ctx.lineWidth = annotation.strokeWidth;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      if (annotation.points.length === 1) {
+        ctx.fillStyle = annotation.color;
+        ctx.beginPath();
+        ctx.arc(annotation.points[0].x, annotation.points[0].y, annotation.strokeWidth / 2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.beginPath();
+        ctx.moveTo(annotation.points[0].x, annotation.points[0].y);
+
+        for (let i = 1; i < annotation.points.length - 1; i++) {
+          const p0 = annotation.points[i];
+          const p1 = annotation.points[i + 1];
+          const midX = (p0.x + p1.x) / 2;
+          const midY = (p0.y + p1.y) / 2;
+          ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
+        }
+
+        const lastPoint = annotation.points[annotation.points.length - 1];
+        ctx.lineTo(lastPoint.x, lastPoint.y);
+        ctx.stroke();
+      }
+    } else if (annotation.type === 'brush') {
+      ctx.fillStyle = annotation.color;
+
+      if (annotation.points.length === 1) {
+        const point = annotation.points[0];
+        const radius = (point.width ?? annotation.strokeWidth) / 2;
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        for (let i = 0; i < annotation.points.length - 1; i++) {
+          const p0 = annotation.points[i];
+          const p1 = annotation.points[i + 1];
+          const r0 = (p0.width ?? annotation.strokeWidth) / 2;
+          const r1 = (p1.width ?? annotation.strokeWidth) / 2;
+
+          const dx = p1.x - p0.x;
+          const dy = p1.y - p0.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len === 0) continue;
+
+          const nx = -dy / len;
+          const ny = dx / len;
+
+          ctx.beginPath();
+          ctx.moveTo(p0.x + nx * r0, p0.y + ny * r0);
+          ctx.lineTo(p1.x + nx * r1, p1.y + ny * r1);
+          ctx.lineTo(p1.x - nx * r1, p1.y - ny * r1);
+          ctx.lineTo(p0.x - nx * r0, p0.y - ny * r0);
+          ctx.closePath();
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(p0.x, p0.y, r0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        const lastPoint = annotation.points[annotation.points.length - 1];
+        const lastRadius = (lastPoint.width ?? annotation.strokeWidth) / 2;
+        ctx.beginPath();
+        ctx.arc(lastPoint.x, lastPoint.y, lastRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else if (annotation.type === 'fill' && annotation.fillMask) {
+      // Apply fill mask - fill the masked area with the annotation color
+      const mask = annotation.fillMask;
+      const maskData = mask.data;
+
+      // Parse fill color
+      const color = annotation.color;
+      let r = 0, g = 0, b = 0;
+      if (color.startsWith('#')) {
+        const hex = color.slice(1);
+        if (hex.length === 3) {
+          r = parseInt(hex[0] + hex[0], 16);
+          g = parseInt(hex[1] + hex[1], 16);
+          b = parseInt(hex[2] + hex[2], 16);
+        } else if (hex.length === 6) {
+          r = parseInt(hex.slice(0, 2), 16);
+          g = parseInt(hex.slice(2, 4), 16);
+          b = parseInt(hex.slice(4, 6), 16);
+        }
+      }
+
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+
+      for (let i = 0; i < maskData.length; i += 4) {
+        if (maskData[i + 3] > 0) {
+          data[i] = r;
+          data[i + 1] = g;
+          data[i + 2] = b;
+          data[i + 3] = 255;
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    ctx.restore();
+  }
+
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+/**
+ * Create a fill annotation from flood fill result
+ */
+export function createFillAnnotation(
+  clickPoint: AnnotationPoint,
+  color: string,
+  mask: ImageData
+): Annotation {
+  return {
+    id: `annotation-${Date.now()}`,
+    type: 'fill',
+    color,
+    strokeWidth: 0, // Not used for fill
+    points: [clickPoint], // Store the origin point
+    shadow: false,
+    fillMask: mask,
+    fillOrigin: { x: clickPoint.x, y: clickPoint.y }
+  };
 }

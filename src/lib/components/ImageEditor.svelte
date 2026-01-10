@@ -33,6 +33,7 @@
     getInputFile,
     handleDragOver
   } from '../utils/editor-core';
+  import { calculateFitScale } from '../utils/canvas';
   import Toolbar from './Toolbar.svelte';
   import Canvas from './Canvas.svelte';
   import CropTool from './CropTool.svelte';
@@ -94,6 +95,21 @@
           .catch(error => console.error('Failed to load initial image:', error));
       } else {
         handleFileUpload(initialImage);
+      }
+    }
+  });
+
+  // Recalculate viewport.scale when canvas container size changes
+  // This fixes coordinate alignment issues (e.g., fill tool) when width/height props
+  // are not specified and the container uses clientWidth/clientHeight
+  $effect(() => {
+    if (state.imageData.original && clientWidth && clientHeight) {
+      const sourceWidth = state.cropArea ? state.cropArea.width : state.imageData.original.width;
+      const sourceHeight = state.cropArea ? state.cropArea.height : state.imageData.original.height;
+      const newScale = calculateFitScale(sourceWidth, sourceHeight, clientWidth, clientHeight);
+
+      if (Math.abs(state.viewport.scale - newScale) > 0.001) {
+        state = setViewport(state, { scale: newScale });
       }
     }
   });
@@ -351,6 +367,7 @@
             viewport={state.viewport}
             transform={state.transform}
             annotations={state.annotations}
+            stampAreas={state.stampAreas}
             cropArea={state.cropArea}
             {initialTool}
             {initialStrokeWidth}

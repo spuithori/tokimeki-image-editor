@@ -10,9 +10,13 @@ import {
   getEventCoords,
   createPenAnnotation,
   createBrushAnnotation,
+  createFillAnnotation,
   addPointToPen,
   addPointToBrush,
   finalizeBrushStroke,
+  performFloodFill,
+  getCompositeImageData,
+  getAnnotationOnlyImageData,
   type BrushState
 } from './drawing';
 
@@ -365,16 +369,20 @@ export function shouldPan(state: EditorInteractionState): boolean {
 
 /**
  * Handle mouse down for drawing overlay
+ * For fill tool, returns completedAnnotation immediately
+ * @param ignoreBackground - If true, flood fill only considers annotations as boundaries (default: true)
  */
 export function handleOverlayMouseDown(
   event: MouseEvent,
   state: EditorInteractionState,
   ctx: EditorContext,
-  tool: 'pen' | 'brush',
+  tool: 'pen' | 'brush' | 'fill',
   color: string,
   strokeWidth: number,
-  shadow: boolean = false
-): EditorInteractionState {
+  shadow: boolean = false,
+  existingAnnotations: Annotation[] = [],
+  ignoreBackground: boolean = true
+): EditorInteractionState | { state: EditorInteractionState; completedAnnotation: Annotation } {
   if (event.button !== 0) return state;
 
   event.preventDefault();
@@ -401,7 +409,24 @@ export function handleOverlayMouseDown(
   const imagePoint = screenToImageCoords(event.clientX, event.clientY, coordContext);
   if (!imagePoint) return state;
 
-  if (tool === 'pen') {
+  if (tool === 'fill') {
+    // Get image data for flood fill
+    // If ignoreBackground is true, use only annotations on white background
+    // Otherwise, use composite of background image + annotations
+    const imageData = ignoreBackground
+      ? getAnnotationOnlyImageData(ctx.image.width, ctx.image.height, existingAnnotations)
+      : getCompositeImageData(ctx.image, existingAnnotations);
+    const fillResult = performFloodFill(imageData, imagePoint.x, imagePoint.y, 32);
+
+    if (fillResult && fillResult.pixelCount > 0) {
+      const fillAnnotation = createFillAnnotation(imagePoint, color, fillResult.mask);
+      return {
+        state,
+        completedAnnotation: fillAnnotation
+      };
+    }
+    return state;
+  } else if (tool === 'pen') {
     return {
       ...state,
       isDrawing: true,
@@ -426,9 +451,11 @@ export function handleOverlayMouseMove(
   event: MouseEvent,
   state: EditorInteractionState,
   ctx: EditorContext,
-  tool: 'pen' | 'brush',
+  tool: 'pen' | 'brush' | 'fill',
   strokeWidth: number
 ): { state: EditorInteractionState; viewportUpdate?: { offsetX: number; offsetY: number } } | null {
+  // Fill tool doesn't need move handling
+  if (tool === 'fill' && !state.isPanning) return null;
   if (!ctx.canvas || !ctx.image) return null;
 
   // Handle panning
@@ -500,8 +527,12 @@ export function handleOverlayMouseMove(
  */
 export function handleOverlayMouseUp(
   state: EditorInteractionState,
-  tool: 'pen' | 'brush'
+  tool: 'pen' | 'brush' | 'fill'
 ): { state: EditorInteractionState; completedAnnotation?: Annotation } {
+  // Fill tool completes on mouse down, not up
+  if (tool === 'fill') {
+    return { state: { ...state, isPanning: false } };
+  }
   // Stop panning
   if (state.isPanning) {
     return { state: { ...state, isPanning: false } };
@@ -535,16 +566,20 @@ export function handleOverlayMouseUp(
 
 /**
  * Handle touch start for drawing overlay
+ * For fill tool, returns completedAnnotation immediately
+ * @param ignoreBackground - If true, flood fill only considers annotations as boundaries (default: true)
  */
 export function handleOverlayTouchStart(
   event: TouchEvent,
   state: EditorInteractionState,
   ctx: EditorContext,
-  tool: 'pen' | 'brush',
+  tool: 'pen' | 'brush' | 'fill',
   color: string,
   strokeWidth: number,
-  shadow: boolean = false
-): EditorInteractionState {
+  shadow: boolean = false,
+  existingAnnotations: Annotation[] = [],
+  ignoreBackground: boolean = true
+): EditorInteractionState | { state: EditorInteractionState; completedAnnotation: Annotation } {
   if (!ctx.canvas || !ctx.image) return state;
 
   // Two-finger touch for panning/zooming
@@ -572,7 +607,7 @@ export function handleOverlayTouchStart(
         lastPanPosition: { x: event.touches[0].clientX, y: event.touches[0].clientY }
       };
     } else {
-      // Start drawing
+      // Start drawing or fill
       const coordContext: CoordinateContext = {
         canvas: ctx.canvas,
         image: ctx.image,
@@ -585,7 +620,24 @@ export function handleOverlayTouchStart(
 
       event.preventDefault();
 
-      if (tool === 'pen') {
+      if (tool === 'fill') {
+        // Get image data for flood fill
+        // If ignoreBackground is true, use only annotations on white background
+        // Otherwise, use composite of background image + annotations
+        const imageData = ignoreBackground
+          ? getAnnotationOnlyImageData(ctx.image.width, ctx.image.height, existingAnnotations)
+          : getCompositeImageData(ctx.image, existingAnnotations);
+        const fillResult = performFloodFill(imageData, imagePoint.x, imagePoint.y, 32);
+
+        if (fillResult && fillResult.pixelCount > 0) {
+          const fillAnnotation = createFillAnnotation(imagePoint, color, fillResult.mask);
+          return {
+            state,
+            completedAnnotation: fillAnnotation
+          };
+        }
+        return state;
+      } else if (tool === 'pen') {
         return {
           ...state,
           isDrawing: true,
@@ -614,7 +666,7 @@ export function handleOverlayTouchMove(
   event: TouchEvent,
   state: EditorInteractionState,
   ctx: EditorContext,
-  tool: 'pen' | 'brush',
+  tool: 'pen' | 'brush' | 'fill',
   strokeWidth: number
 ): {
   state: EditorInteractionState;
@@ -730,8 +782,19 @@ export function handleOverlayTouchMove(
 export function handleOverlayTouchEnd(
   event: TouchEvent,
   state: EditorInteractionState,
-  tool: 'pen' | 'brush'
+  tool: 'pen' | 'brush' | 'fill'
 ): { state: EditorInteractionState; completedAnnotation?: Annotation } {
+  // Fill tool completes on touch start, not end
+  if (tool === 'fill') {
+    return {
+      state: {
+        ...state,
+        isPanning: false,
+        isTwoFingerTouch: false,
+        initialPinchDistance: 0
+      }
+    };
+  }
   if (event.touches.length === 0) {
     // All fingers lifted - finalize
     if (state.isDrawing && state.currentAnnotation) {

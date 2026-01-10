@@ -44,12 +44,13 @@ export interface StampArea {
   stampContent: string;
 }
 
-export type AnnotationType = 'pen' | 'brush' | 'arrow' | 'rectangle' | 'text';
+export type AnnotationType = 'pen' | 'brush' | 'arrow' | 'rectangle' | 'text' | 'fill' | 'eraser-stroke';
 
 export interface AnnotationPoint {
   x: number; // image coordinates
   y: number; // image coordinates
   width?: number; // for brush: width at this point (based on speed)
+  pressure?: number; // for pressure-sensitive input
 }
 
 export interface Annotation {
@@ -62,6 +63,9 @@ export interface Annotation {
   // Text-specific properties
   text?: string; // Text content for text annotations
   fontSize?: number; // Font size in image coordinates
+  // Fill-specific properties
+  fillMask?: ImageData; // Mask data for flood fill
+  fillOrigin?: { x: number; y: number }; // Original click point for fill
 }
 
 export interface TransformState {

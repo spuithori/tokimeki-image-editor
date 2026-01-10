@@ -674,18 +674,31 @@ export function handleQuickDrawKeyUp(
 
 /**
  * Handle mouse down for QuickDraw
+ * @param ignoreBackground - If true, flood fill only considers annotations as boundaries (default: true)
  */
 export function handleQuickDrawMouseDown(
   state: QuickDrawState,
   event: MouseEvent,
   ctx: EditorContext,
-  tool: 'pen' | 'brush',
+  tool: 'pen' | 'brush' | 'fill',
   color: string,
-  strokeWidth: number
+  strokeWidth: number,
+  ignoreBackground: boolean = true
 ): QuickDrawState {
   if (!state.isInitialized) return state;
-  const newInteractionState = handleOverlayMouseDown(event, state.interactionState, ctx, tool, color, strokeWidth);
-  return { ...state, interactionState: newInteractionState };
+  // Pass existing annotations so flood fill can respect pen/brush strokes as boundaries
+  const result = handleOverlayMouseDown(event, state.interactionState, ctx, tool, color, strokeWidth, false, state.annotations, ignoreBackground);
+
+  // Check if result contains a completed annotation (for fill tool)
+  if ('completedAnnotation' in result) {
+    return {
+      ...state,
+      interactionState: result.state,
+      annotations: [...state.annotations, result.completedAnnotation]
+    };
+  }
+
+  return { ...state, interactionState: result };
 }
 
 /**
@@ -695,7 +708,7 @@ export function handleQuickDrawMouseMove(
   state: QuickDrawState,
   event: MouseEvent,
   ctx: EditorContext,
-  tool: 'pen' | 'brush',
+  tool: 'pen' | 'brush' | 'fill',
   strokeWidth: number
 ): QuickDrawState {
   const result = handleOverlayMouseMove(event, state.interactionState, ctx, tool, strokeWidth);
@@ -714,7 +727,7 @@ export function handleQuickDrawMouseMove(
  */
 export function handleQuickDrawMouseUp(
   state: QuickDrawState,
-  tool: 'pen' | 'brush'
+  tool: 'pen' | 'brush' | 'fill'
 ): QuickDrawState {
   const result = handleOverlayMouseUp(state.interactionState, tool);
   let newState = { ...state, interactionState: result.state };
@@ -726,18 +739,31 @@ export function handleQuickDrawMouseUp(
 
 /**
  * Handle touch start for QuickDraw
+ * @param ignoreBackground - If true, flood fill only considers annotations as boundaries (default: true)
  */
 export function handleQuickDrawTouchStart(
   state: QuickDrawState,
   event: TouchEvent,
   ctx: EditorContext,
-  tool: 'pen' | 'brush',
+  tool: 'pen' | 'brush' | 'fill',
   color: string,
-  strokeWidth: number
+  strokeWidth: number,
+  ignoreBackground: boolean = true
 ): QuickDrawState {
   if (!state.isInitialized) return state;
-  const newInteractionState = handleOverlayTouchStart(event, state.interactionState, ctx, tool, color, strokeWidth);
-  return { ...state, interactionState: newInteractionState };
+  // Pass existing annotations so flood fill can respect pen/brush strokes as boundaries
+  const result = handleOverlayTouchStart(event, state.interactionState, ctx, tool, color, strokeWidth, false, state.annotations, ignoreBackground);
+
+  // Check if result contains a completed annotation (for fill tool)
+  if ('completedAnnotation' in result) {
+    return {
+      ...state,
+      interactionState: result.state,
+      annotations: [...state.annotations, result.completedAnnotation]
+    };
+  }
+
+  return { ...state, interactionState: result };
 }
 
 /**
@@ -747,7 +773,7 @@ export function handleQuickDrawTouchMove(
   state: QuickDrawState,
   event: TouchEvent,
   ctx: EditorContext,
-  tool: 'pen' | 'brush',
+  tool: 'pen' | 'brush' | 'fill',
   strokeWidth: number,
   canvasWidth: number,
   canvasHeight: number,
@@ -779,7 +805,7 @@ export function handleQuickDrawTouchMove(
 export function handleQuickDrawTouchEnd(
   state: QuickDrawState,
   event: TouchEvent,
-  tool: 'pen' | 'brush'
+  tool: 'pen' | 'brush' | 'fill'
 ): QuickDrawState {
   const result = handleOverlayTouchEnd(event, state.interactionState, tool);
   let newState = { ...state, interactionState: result.state };
@@ -849,6 +875,42 @@ export function quickDrawUndo(state: QuickDrawState): QuickDrawState {
     ...state,
     annotations: state.annotations.slice(0, -1)
   };
+}
+
+/**
+ * Parse CSS color string to RGB values
+ */
+function parseColor(color: string): { r: number; g: number; b: number } {
+  // Handle hex colors
+  if (color.startsWith('#')) {
+    const hex = color.slice(1);
+    if (hex.length === 3) {
+      return {
+        r: parseInt(hex[0] + hex[0], 16),
+        g: parseInt(hex[1] + hex[1], 16),
+        b: parseInt(hex[2] + hex[2], 16)
+      };
+    } else if (hex.length === 6) {
+      return {
+        r: parseInt(hex.slice(0, 2), 16),
+        g: parseInt(hex.slice(2, 4), 16),
+        b: parseInt(hex.slice(4, 6), 16)
+      };
+    }
+  }
+
+  // Handle rgb() and rgba() colors
+  const rgbMatch = color.match(/rgba?\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+  if (rgbMatch) {
+    return {
+      r: parseInt(rgbMatch[1], 10),
+      g: parseInt(rgbMatch[2], 10),
+      b: parseInt(rgbMatch[3], 10)
+    };
+  }
+
+  // Default to black if parsing fails
+  return { r: 0, g: 0, b: 0 };
 }
 
 /**
@@ -969,6 +1031,29 @@ export async function exportQuickDraw(state: QuickDrawState): Promise<QuickDrawE
         ctx.arc(lastPoint.x, lastPoint.y, lastRadius, 0, Math.PI * 2);
         ctx.fill();
       }
+    } else if (annotation.type === 'fill' && annotation.fillMask) {
+      // Fill uses mask data to paint the filled area
+      const mask = annotation.fillMask;
+      const maskData = mask.data;
+
+      // Parse the fill color
+      const fillColor = parseColor(annotation.color);
+
+      // Get current canvas image data
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+
+      // Apply fill color where mask is white
+      for (let i = 0; i < maskData.length; i += 4) {
+        if (maskData[i + 3] > 0) { // Check alpha of mask
+          data[i] = fillColor.r;
+          data[i + 1] = fillColor.g;
+          data[i + 2] = fillColor.b;
+          data[i + 3] = 255;
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
     }
 
     ctx.restore();

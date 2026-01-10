@@ -171,8 +171,10 @@
       const ctx = overlayCanvasElement.getContext('2d');
       if (ctx) {
         ctx.clearRect(0, 0, width, height);
-        if (stampAreas.length > 0) applyStamps(overlayCanvasElement, currentImage, viewport, stampAreas, cropArea);
+        // Annotations first (below stamps)
         if (shouldRenderAnnotations) applyAnnotations(overlayCanvasElement, currentImage, viewport, annotations, cropArea);
+        // Stamps on top
+        if (stampAreas.length > 0) applyStamps(overlayCanvasElement, currentImage, viewport, stampAreas, cropArea);
       }
     } else if (overlayCanvasElement) {
       const ctx = overlayCanvasElement.getContext('2d');

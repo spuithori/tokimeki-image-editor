@@ -1,15 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
-  import type { Annotation, AnnotationType, AnnotationPoint, Viewport, TransformState, CropArea } from '../types';
-  import { screenToImageCoords } from '../utils/canvas';
+  import type { Annotation, AnnotationType, AnnotationPoint, Viewport, TransformState, CropArea, StampArea } from '../types';
+  import { screenToImageCoords, getOrCreateFillCanvas, applyStamps } from '../utils/canvas';
   import {
     getEventCoords,
     createPenAnnotation,
     createBrushAnnotation,
+    createFillAnnotation,
+    createEraserStrokeAnnotation,
     addPointToPen,
     addPointToBrush,
     finalizeBrushStroke,
+    performFloodFill,
+    getCompositeImageData,
+    getAnnotationOnlyImageData,
     generateSmoothPath,
     smoothPoints,
     interpolateBrushPoints,
@@ -32,7 +37,7 @@
     imageToCanvasCoords as sharedImageToCanvasCoords,
     type CoordinateContext
   } from '../utils/coordinates';
-  import { Pencil, Eraser, ArrowRight, Square, Brush, Type } from 'lucide-svelte';
+  import { Pencil, Eraser, ArrowRight, Square, Brush, Type, PaintBucket } from 'lucide-svelte';
   import ToolPanel from './ToolPanel.svelte';
   import { DEFAULT_COLOR_PRESETS, DEFAULT_DRAWING_COLOR } from '../utils/colors';
 
@@ -42,6 +47,7 @@
     viewport: Viewport;
     transform: TransformState;
     annotations: Annotation[];
+    stampAreas?: StampArea[];
     cropArea?: CropArea | null;
     initialTool?: AnnotationType | 'eraser';
     initialStrokeWidth?: number;
@@ -51,7 +57,7 @@
     onViewportChange?: (viewport: Partial<Viewport>) => void;
   }
 
-  let { canvas, image, viewport, transform, annotations, cropArea, initialTool, initialStrokeWidth, initialColor, onUpdate, onClose, onViewportChange }: Props = $props();
+  let { canvas, image, viewport, transform, annotations, stampAreas = [], cropArea, initialTool, initialStrokeWidth, initialColor, onUpdate, onClose, onViewportChange }: Props = $props();
 
   let containerElement = $state<HTMLDivElement | null>(null);
 
@@ -60,6 +66,8 @@
   let currentColor = $state(initialColor ?? DEFAULT_DRAWING_COLOR);
   let strokeWidth = $state(initialStrokeWidth ?? 10);
   let shadowEnabled = $state(false);
+  let ignoreBackground = $state(true); // Fill tool: ignore background image colors
+  let eraserMode = $state<'layer' | 'paint'>('layer'); // Eraser mode: layer deletion or paint eraser
 
   // Text tool state
   let fontSize = $state(48);
@@ -301,21 +309,42 @@
     }
 
     if (currentTool === 'eraser') {
-      // Find and remove annotation at click point
-      const canvasPoint = { x: coords.clientX, y: coords.clientY };
-      const rect = canvas.getBoundingClientRect();
-      const localX = canvasPoint.x - rect.left;
-      const localY = canvasPoint.y - rect.top;
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-      const canvasX = localX * scaleX;
-      const canvasY = localY * scaleY;
+      if (eraserMode === 'layer') {
+        // Find and remove annotation at click point
+        const canvasPoint = { x: coords.clientX, y: coords.clientY };
+        const rect = canvas.getBoundingClientRect();
+        const localX = canvasPoint.x - rect.left;
+        const localY = canvasPoint.y - rect.top;
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const canvasX = localX * scaleX;
+        const canvasY = localY * scaleY;
 
-      // Check each annotation for hit
-      const hitIndex = findAnnotationAtPoint(canvasX, canvasY);
-      if (hitIndex !== -1) {
-        const updated = annotations.filter((_, i) => i !== hitIndex);
-        onUpdate(updated);
+        // Check each annotation for hit
+        const hitIndex = findAnnotationAtPoint(canvasX, canvasY);
+        if (hitIndex !== -1) {
+          const updated = annotations.filter((_, i) => i !== hitIndex);
+          onUpdate(updated);
+        }
+        return;
+      } else {
+        // Paint eraser mode: create eraser stroke
+        isDrawing = true;
+        currentAnnotation = createEraserStrokeAnnotation(imagePoint, strokeWidth);
+        return;
+      }
+    }
+
+    if (currentTool === 'fill') {
+      // Get image data based on ignoreBackground setting
+      const imageData = ignoreBackground
+        ? getAnnotationOnlyImageData(image.width, image.height, annotations)
+        : getCompositeImageData(image, annotations);
+      const fillResult = performFloodFill(imageData, imagePoint.x, imagePoint.y, 32);
+
+      if (fillResult && fillResult.pixelCount > 0) {
+        const fillAnnotation = createFillAnnotation(imagePoint, currentColor, fillResult.mask);
+        onUpdate([...annotations, fillAnnotation]);
       }
       return;
     }
@@ -434,8 +463,8 @@
 
     event.preventDefault();
 
-    if (currentTool === 'pen') {
-      // Use shared drawing utility
+    if (currentTool === 'pen' || (currentTool === 'eraser' && eraserMode === 'paint')) {
+      // Use shared drawing utility (also used for eraser strokes)
       const updated = addPointToPen(currentAnnotation, imagePoint);
       if (updated) {
         currentAnnotation = updated;
@@ -490,9 +519,10 @@
     // Only save if annotation has enough points
     if (currentAnnotation.points.length >= 2 ||
        (currentAnnotation.type === 'pen' && currentAnnotation.points.length >= 1) ||
-       (currentAnnotation.type === 'brush' && currentAnnotation.points.length >= 1)) {
+       (currentAnnotation.type === 'brush' && currentAnnotation.points.length >= 1) ||
+       (currentAnnotation.type === 'eraser-stroke' && currentAnnotation.points.length >= 1)) {
       // For arrow/rectangle, ensure start and end are different
-      if (currentAnnotation.type !== 'pen' && currentAnnotation.type !== 'brush') {
+      if (currentAnnotation.type !== 'pen' && currentAnnotation.type !== 'brush' && currentAnnotation.type !== 'eraser-stroke') {
         const start = currentAnnotation.points[0];
         const end = currentAnnotation.points[1];
         const distance = Math.sqrt(Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2));
@@ -505,7 +535,18 @@
     }
 
     isDrawing = false;
-    currentAnnotation = null;
+    // Delay clearing currentAnnotation to ensure annotations update is processed first
+    // This prevents a brief flash where hasEraserStrokes becomes false
+    const annotationToReset = currentAnnotation;
+    if (annotationToReset?.type === 'eraser-stroke') {
+      setTimeout(() => {
+        if (currentAnnotation === annotationToReset) {
+          currentAnnotation = null;
+        }
+      }, 0);
+    } else {
+      currentAnnotation = null;
+    }
     brushState = null;
   }
 
@@ -798,6 +839,448 @@
     }).filter(Boolean) as { x: number; y: number; width?: number }[];
     return { ...currentAnnotation, canvasPoints: points };
   });
+
+  // Check if there are any fill or eraser strokes (requires Canvas rendering)
+  let hasFillAnnotations = $derived(annotations.some(a => a.type === 'fill'));
+  let hasEraserStrokes = $derived(
+    annotations.some(a => a.type === 'eraser-stroke') ||
+    (currentAnnotation?.type === 'eraser-stroke')
+  );
+
+  // Use Canvas rendering when fill or eraser strokes exist
+  // This ensures proper compositing (destination-out for eraser, fill at bottom layer)
+  let useCanvasRendering = $derived(hasFillAnnotations || hasEraserStrokes);
+
+  // Annotation canvas reference (used when fill or eraser strokes exist)
+  let annotationCanvasElement = $state<HTMLCanvasElement | null>(null);
+
+  // Render all annotations to canvas when fill or eraser strokes exist
+  // This allows proper compositing (fill at bottom, eraser with destination-out)
+  // Matches the logic in canvas.ts applyAnnotations
+  $effect(() => {
+    if (!annotationCanvasElement || !canvas || !image) return;
+
+    const ctx = annotationCanvasElement.getContext('2d');
+    if (!ctx) return;
+
+    // Ensure canvas size matches parent
+    if (annotationCanvasElement.width !== canvas.width || annotationCanvasElement.height !== canvas.height) {
+      annotationCanvasElement.width = canvas.width;
+      annotationCanvasElement.height = canvas.height;
+    }
+
+    // Clear canvas
+    ctx.clearRect(0, 0, annotationCanvasElement.width, annotationCanvasElement.height);
+
+    // Only render when canvas rendering is needed (fill or eraser strokes exist)
+    if (!useCanvasRendering) return;
+
+    // Calculate transform
+    const totalScale = viewport.scale * viewport.zoom;
+    const centerX = annotationCanvasElement.width / 2;
+    const centerY = annotationCanvasElement.height / 2;
+    const imageWidth = image.width;
+    const imageHeight = image.height;
+    const cropOffsetX = cropArea ? cropArea.x : 0;
+    const cropOffsetY = cropArea ? cropArea.y : 0;
+    const sourceWidth = cropArea ? cropArea.width : imageWidth;
+    const sourceHeight = cropArea ? cropArea.height : imageHeight;
+
+    // Helper to convert image coords to canvas coords
+    const toCanvas = (point: AnnotationPoint) => ({
+      x: (point.x - cropOffsetX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX,
+      y: (point.y - cropOffsetY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY
+    });
+
+    // Calculate origin for fill rendering (canvas position of image (0,0))
+    const originX = (0 - cropOffsetX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX;
+    const originY = (0 - cropOffsetY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY;
+
+    // Build list of all annotations including current
+    const allAnnotations = currentAnnotation
+      ? [...annotations, currentAnnotation]
+      : annotations;
+
+    // Step 1: Draw fill annotations first (always at bottom layer)
+    for (const annotation of allAnnotations) {
+      if (annotation.type !== 'fill') continue;
+
+      const fillCanvas = getOrCreateFillCanvas(annotation);
+      if (!fillCanvas) continue;
+
+      ctx.drawImage(
+        fillCanvas,
+        originX,
+        originY,
+        fillCanvas.width * totalScale,
+        fillCanvas.height * totalScale
+      );
+    }
+
+    // Step 2: Draw other annotations and eraser strokes in order
+    // Eraser strokes affect all previously drawn content (including fills)
+
+    // Process annotations in order - eraser strokes affect all previously drawn content
+    for (const annotation of allAnnotations) {
+      // Skip fill annotations (already drawn in Step 1)
+      if (annotation.type === 'fill') continue;
+
+      if (annotation.type === 'eraser-stroke') {
+        // Apply eraser stroke using destination-out
+        if (annotation.points.length === 0) continue;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'destination-out';
+
+        const points = annotation.points.map(toCanvas);
+        ctx.strokeStyle = 'rgba(0,0,0,1)';
+        ctx.lineWidth = annotation.strokeWidth * totalScale;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        if (points.length === 1) {
+          ctx.beginPath();
+          ctx.arc(points[0].x, points[0].y, annotation.strokeWidth * totalScale / 2, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+          for (let i = 1; i < points.length - 1; i++) {
+            const p0 = points[i];
+            const p1 = points[i + 1];
+            const midX = (p0.x + p1.x) / 2;
+            const midY = (p0.y + p1.y) / 2;
+            ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
+          }
+          ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+          ctx.stroke();
+        }
+
+        ctx.restore();
+        continue;
+      }
+
+      // Draw non-eraser annotation
+      if (annotation.points.length === 0) continue;
+
+      ctx.save();
+
+      // Apply shadow if enabled
+      if (annotation.shadow) {
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 6;
+        ctx.shadowOffsetX = 2;
+        ctx.shadowOffsetY = 2;
+      }
+
+      if (annotation.type === 'pen') {
+        const points = annotation.points.map(toCanvas);
+        ctx.strokeStyle = annotation.color;
+        ctx.lineWidth = annotation.strokeWidth * totalScale;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        if (points.length === 1) {
+          ctx.fillStyle = annotation.color;
+          ctx.beginPath();
+          ctx.arc(points[0].x, points[0].y, annotation.strokeWidth * totalScale / 2, 0, Math.PI * 2);
+          ctx.fill();
+        } else {
+          ctx.beginPath();
+          ctx.moveTo(points[0].x, points[0].y);
+          for (let i = 1; i < points.length - 1; i++) {
+            const p0 = points[i];
+            const p1 = points[i + 1];
+            const midX = (p0.x + p1.x) / 2;
+            const midY = (p0.y + p1.y) / 2;
+            ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
+          }
+          ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+          ctx.stroke();
+        }
+      } else if (annotation.type === 'brush') {
+        const rawPoints = annotation.points.map(p => ({
+          ...toCanvas(p),
+          width: p.width ?? annotation.strokeWidth
+        }));
+        ctx.fillStyle = annotation.color;
+
+        if (rawPoints.length === 1) {
+          // Single point - elliptical brush mark
+          const p = rawPoints[0];
+          const width = (p.width * totalScale) / 2;
+          const rx = width * 0.8;
+          const ry = width * 1.2;
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (rawPoints.length === 2) {
+          // Two points - teardrop shape
+          const p1 = rawPoints[0];
+          const p2 = rawPoints[1];
+          const w1 = ((p1.width ?? annotation.strokeWidth * 0.3) * totalScale) / 2;
+          const w2 = ((p2.width ?? annotation.strokeWidth * 0.5) * totalScale) / 2;
+
+          const dx = p2.x - p1.x;
+          const dy = p2.y - p1.y;
+          const len = Math.sqrt(dx * dx + dy * dy);
+          if (len > 0) {
+            const nx = -dy / len;
+            const ny = dx / len;
+
+            const tipExtend = w2 * 0.3;
+            const tipX = p2.x + (dx / len) * tipExtend;
+            const tipY = p2.y + (dy / len) * tipExtend;
+
+            ctx.beginPath();
+            ctx.moveTo(p1.x + nx * w1, p1.y + ny * w1);
+            ctx.quadraticCurveTo(
+              (p1.x + nx * w1 + p2.x + nx * w2) / 2 + nx * w2 * 0.3,
+              (p1.y + ny * w1 + p2.y + ny * w2) / 2 + ny * w2 * 0.3,
+              p2.x + nx * w2, p2.y + ny * w2
+            );
+            ctx.quadraticCurveTo(tipX + nx * w2 * 0.2, tipY + ny * w2 * 0.2, tipX, tipY);
+            ctx.quadraticCurveTo(tipX - nx * w2 * 0.2, tipY - ny * w2 * 0.2, p2.x - nx * w2, p2.y - ny * w2);
+            ctx.quadraticCurveTo(
+              (p1.x - nx * w1 + p2.x - nx * w2) / 2 - nx * w2 * 0.3,
+              (p1.y - ny * w1 + p2.y - ny * w2) / 2 - ny * w2 * 0.3,
+              p1.x - nx * w1, p1.y - ny * w1
+            );
+            ctx.closePath();
+            ctx.fill();
+          }
+        } else {
+          // 3+ points - interpolate for smooth outline
+          const interpolated: { x: number; y: number; width: number }[] = [];
+          for (let i = 0; i < rawPoints.length - 1; i++) {
+            const p1 = rawPoints[i];
+            const p2 = rawPoints[i + 1];
+            const dist = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
+
+            interpolated.push(p1);
+
+            const interpolateCount = Math.floor(dist / 5);
+            for (let j = 1; j < interpolateCount; j++) {
+              const t = j / interpolateCount;
+              const smoothT = t * t * (3 - 2 * t);
+              interpolated.push({
+                x: p1.x + (p2.x - p1.x) * t,
+                y: p1.y + (p2.y - p1.y) * t,
+                width: p1.width + (p2.width - p1.width) * smoothT
+              });
+            }
+          }
+          interpolated.push(rawPoints[rawPoints.length - 1]);
+
+          // Generate outline
+          let leftSide: { x: number; y: number }[] = [];
+          let rightSide: { x: number; y: number }[] = [];
+
+          for (let i = 0; i < interpolated.length; i++) {
+            const curr = interpolated[i];
+            const width = (curr.width * totalScale) / 2;
+
+            let dx: number, dy: number;
+            if (i === 0) {
+              dx = interpolated[1].x - curr.x;
+              dy = interpolated[1].y - curr.y;
+            } else if (i === interpolated.length - 1) {
+              dx = curr.x - interpolated[i - 1].x;
+              dy = curr.y - interpolated[i - 1].y;
+            } else {
+              const lookback = Math.min(i, 3);
+              const lookforward = Math.min(interpolated.length - 1 - i, 3);
+              dx = interpolated[i + lookforward].x - interpolated[i - lookback].x;
+              dy = interpolated[i + lookforward].y - interpolated[i - lookback].y;
+            }
+
+            const len = Math.sqrt(dx * dx + dy * dy);
+            if (len === 0) continue;
+
+            const nx = -dy / len;
+            const ny = dx / len;
+
+            leftSide.push({ x: curr.x + nx * width, y: curr.y + ny * width });
+            rightSide.push({ x: curr.x - nx * width, y: curr.y - ny * width });
+          }
+
+          // Smooth outline
+          const smoothOutline = (pts: { x: number; y: number }[], windowSize: number = 5) => {
+            if (pts.length < 3) return pts;
+            const result: { x: number; y: number }[] = [];
+            const halfWindow = Math.floor(windowSize / 2);
+            for (let i = 0; i < pts.length; i++) {
+              if (i < halfWindow || i >= pts.length - halfWindow) {
+                result.push(pts[i]);
+                continue;
+              }
+              let sumX = 0, sumY = 0, count = 0;
+              for (let j = -halfWindow; j <= halfWindow; j++) {
+                const idx = i + j;
+                if (idx >= 0 && idx < pts.length) {
+                  sumX += pts[idx].x;
+                  sumY += pts[idx].y;
+                  count++;
+                }
+              }
+              result.push({ x: sumX / count, y: sumY / count });
+            }
+            return result;
+          };
+
+          leftSide = smoothOutline(leftSide);
+          rightSide = smoothOutline(rightSide);
+
+          if (leftSide.length >= 2) {
+            ctx.beginPath();
+            ctx.moveTo(leftSide[0].x, leftSide[0].y);
+
+            // Left side
+            for (let i = 1; i < leftSide.length - 1; i++) {
+              const curr = leftSide[i];
+              const next = leftSide[i + 1];
+              const endX = (curr.x + next.x) / 2;
+              const endY = (curr.y + next.y) / 2;
+              ctx.quadraticCurveTo(curr.x, curr.y, endX, endY);
+            }
+            ctx.lineTo(leftSide[leftSide.length - 1].x, leftSide[leftSide.length - 1].y);
+
+            // End cap
+            const lastPoint = interpolated[interpolated.length - 1];
+            const lastWidth = (lastPoint.width * totalScale) / 2;
+            const tipExtend = lastWidth * 0.4;
+            const lastDx = interpolated.length > 1
+              ? interpolated[interpolated.length - 1].x - interpolated[interpolated.length - 2].x
+              : 0;
+            const lastDy = interpolated.length > 1
+              ? interpolated[interpolated.length - 1].y - interpolated[interpolated.length - 2].y
+              : 0;
+            const lastLen = Math.sqrt(lastDx * lastDx + lastDy * lastDy);
+
+            if (lastLen > 0) {
+              const tipX = lastPoint.x + (lastDx / lastLen) * tipExtend;
+              const tipY = lastPoint.y + (lastDy / lastLen) * tipExtend;
+              ctx.quadraticCurveTo(tipX, tipY, rightSide[rightSide.length - 1].x, rightSide[rightSide.length - 1].y);
+            } else {
+              ctx.lineTo(rightSide[rightSide.length - 1].x, rightSide[rightSide.length - 1].y);
+            }
+
+            // Right side backward
+            for (let i = rightSide.length - 2; i > 0; i--) {
+              const curr = rightSide[i];
+              const prev = rightSide[i - 1];
+              const endX = (curr.x + prev.x) / 2;
+              const endY = (curr.y + prev.y) / 2;
+              ctx.quadraticCurveTo(curr.x, curr.y, endX, endY);
+            }
+            ctx.lineTo(rightSide[0].x, rightSide[0].y);
+
+            // Start cap
+            const firstPoint = interpolated[0];
+            const firstWidth = (firstPoint.width * totalScale) / 2;
+            const startExtend = firstWidth * 0.3;
+            const firstDx = interpolated.length > 1
+              ? interpolated[0].x - interpolated[1].x
+              : 0;
+            const firstDy = interpolated.length > 1
+              ? interpolated[0].y - interpolated[1].y
+              : 0;
+            const firstLen = Math.sqrt(firstDx * firstDx + firstDy * firstDy);
+
+            if (firstLen > 0) {
+              const startTipX = firstPoint.x + (firstDx / firstLen) * startExtend;
+              const startTipY = firstPoint.y + (firstDy / firstLen) * startExtend;
+              ctx.quadraticCurveTo(startTipX, startTipY, leftSide[0].x, leftSide[0].y);
+            }
+
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+      } else if (annotation.type === 'arrow') {
+        if (annotation.points.length >= 2) {
+          const start = toCanvas(annotation.points[0]);
+          const end = toCanvas(annotation.points[1]);
+          const angle = Math.atan2(end.y - start.y, end.x - start.x);
+          const scaledStroke = annotation.strokeWidth * totalScale;
+          const headLength = scaledStroke * 3;
+          const headWidth = scaledStroke * 2;
+          const lineEndX = end.x - headLength * 0.7 * Math.cos(angle);
+          const lineEndY = end.y - headLength * 0.7 * Math.sin(angle);
+
+          ctx.strokeStyle = annotation.color;
+          ctx.lineWidth = scaledStroke;
+          ctx.lineCap = 'round';
+
+          ctx.beginPath();
+          ctx.moveTo(start.x, start.y);
+          ctx.lineTo(lineEndX, lineEndY);
+          ctx.stroke();
+
+          ctx.fillStyle = annotation.color;
+          ctx.beginPath();
+          ctx.moveTo(end.x, end.y);
+          ctx.lineTo(end.x - headLength * Math.cos(angle) + headWidth * Math.sin(angle),
+                     end.y - headLength * Math.sin(angle) - headWidth * Math.cos(angle));
+          ctx.lineTo(end.x - headLength * Math.cos(angle) - headWidth * Math.sin(angle),
+                     end.y - headLength * Math.sin(angle) + headWidth * Math.cos(angle));
+          ctx.closePath();
+          ctx.fill();
+        }
+      } else if (annotation.type === 'rectangle') {
+        if (annotation.points.length >= 2) {
+          const p0 = toCanvas(annotation.points[0]);
+          const p1 = toCanvas(annotation.points[1]);
+          const x = Math.min(p0.x, p1.x);
+          const y = Math.min(p0.y, p1.y);
+          const w = Math.abs(p1.x - p0.x);
+          const h = Math.abs(p1.y - p0.y);
+          const cornerRadius = annotation.strokeWidth * totalScale * 1.5;
+
+          ctx.strokeStyle = annotation.color;
+          ctx.lineWidth = annotation.strokeWidth * totalScale;
+          ctx.beginPath();
+          ctx.roundRect(x, y, w, h, cornerRadius);
+          ctx.stroke();
+        }
+      } else if (annotation.type === 'text' && annotation.text) {
+        const point = toCanvas(annotation.points[0]);
+        const scaledFontSize = (annotation.fontSize ?? 48) * totalScale;
+
+        ctx.fillStyle = annotation.color;
+        ctx.font = `bold ${scaledFontSize}px sans-serif`;
+        ctx.textBaseline = 'top';
+        ctx.fillText(annotation.text, point.x, point.y);
+      }
+
+      ctx.restore();
+    }
+  });
+
+  // Stamp canvas reference (stamps are rendered on top of annotations)
+  let stampCanvasElement = $state<HTMLCanvasElement | null>(null);
+
+  // Render stamps on top of annotations
+  $effect(() => {
+    if (!stampCanvasElement || !canvas || !image) return;
+
+    const ctx = stampCanvasElement.getContext('2d');
+    if (!ctx) return;
+
+    // Ensure canvas size matches parent
+    if (stampCanvasElement.width !== canvas.width || stampCanvasElement.height !== canvas.height) {
+      stampCanvasElement.width = canvas.width;
+      stampCanvasElement.height = canvas.height;
+    }
+
+    // Clear canvas
+    ctx.clearRect(0, 0, stampCanvasElement.width, stampCanvasElement.height);
+
+    // Render stamps if any
+    if (stampAreas.length > 0) {
+      applyStamps(stampCanvasElement, image, viewport, stampAreas, cropArea);
+    }
+  });
 </script>
 
 <svelte:window
@@ -814,6 +1297,7 @@
   class:panning={interactionState.isSpaceHeld || interactionState.isTwoFingerTouch}
   class:dragging-text={isDraggingText}
   class:text-mode={currentTool === 'text'}
+  class:fill-mode={currentTool === 'fill'}
   class:hovering-text={isHoveringText}
   class:hovering-resize={isHoveringResizeHandle}
   class:resizing-text={isResizingText}
@@ -822,7 +1306,18 @@
   role="button"
   tabindex="-1"
 >
-  <svg class="annotation-tool-svg">
+  <!-- Annotation canvas (used when fill or eraser strokes exist for proper compositing) -->
+  {#if canvas}
+    <canvas
+      bind:this={annotationCanvasElement}
+      class="annotation-preview-canvas"
+      class:visible={useCanvasRendering}
+      width={canvas.width}
+      height={canvas.height}
+    ></canvas>
+  {/if}
+
+  <svg class="annotation-tool-svg" class:hidden={useCanvasRendering}>
     <!-- Shadow filter definition -->
     <defs>
       <filter id="annotation-shadow" x="-50%" y="-50%" width="200%" height="200%">
@@ -1038,6 +1533,16 @@
     {/if}
   </svg>
 
+  <!-- Stamp canvas (rendered on top of annotations) -->
+  {#if canvas && stampAreas.length > 0}
+    <canvas
+      bind:this={stampCanvasElement}
+      class="stamp-preview-canvas"
+      width={canvas.width}
+      height={canvas.height}
+    ></canvas>
+  {/if}
+
   <!-- Text input overlay -->
   {#if isTextInputVisible && textInputPosition}
     {@const editingAnnotation = editingTextId ? annotations.find(a => a.id === editingTextId) : null}
@@ -1096,6 +1601,14 @@
           title={$_('annotate.brush')}
         >
           <Brush size={20} />
+        </button>
+        <button
+          class="tool-btn"
+          class:active={currentTool === 'fill'}
+          onclick={() => currentTool = 'fill'}
+          title={$_('annotate.fill')}
+        >
+          <PaintBucket size={20} />
         </button>
         <button
           class="tool-btn"
@@ -1205,6 +1718,51 @@
         </button>
       </label>
     </div>
+
+    <!-- Ignore background toggle (fill tool only) -->
+    {#if currentTool === 'fill'}
+      <div class="control-group">
+        <label class="toggle-label">
+          <span>{$_('annotate.ignoreBackground')}</span>
+          <button
+            class="toggle-btn"
+            class:active={ignoreBackground}
+            onclick={() => ignoreBackground = !ignoreBackground}
+            type="button"
+            title={$_('annotate.ignoreBackground')}
+          >
+            <span class="toggle-track">
+              <span class="toggle-thumb"></span>
+            </span>
+          </button>
+        </label>
+      </div>
+    {/if}
+
+    <!-- Eraser mode toggle (eraser tool only) -->
+    {#if currentTool === 'eraser'}
+      <div class="control-group">
+        <span class="group-label">{$_('annotate.eraserMode')}</span>
+        <div class="eraser-mode-buttons">
+          <button
+            class="mode-btn"
+            class:active={eraserMode === 'layer'}
+            onclick={() => eraserMode = 'layer'}
+            title={$_('annotate.eraserModeLayer')}
+          >
+            {$_('annotate.eraserModeLayerShort')}
+          </button>
+          <button
+            class="mode-btn"
+            class:active={eraserMode === 'paint'}
+            onclick={() => eraserMode = 'paint'}
+            title={$_('annotate.eraserModePaint')}
+          >
+            {$_('annotate.eraserModePaintShort')}
+          </button>
+        </div>
+      </div>
+    {/if}
   {/snippet}
 
   {#snippet actions()}
@@ -1232,6 +1790,10 @@
       cursor: grabbing;
     }
 
+    &.fill-mode {
+      cursor: cell;
+    }
+
     &.text-mode {
       cursor: text;
     }
@@ -1247,10 +1809,41 @@
     }
   }
 
-  .annotation-tool-svg {
+  .annotation-preview-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     pointer-events: none;
+    display: none;
+    z-index: 2;
+
+    &.visible {
+      display: block;
+    }
+  }
+
+  .annotation-tool-svg {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 2;
+
+    &.hidden {
+      display: none;
+    }
+  }
+
+  .stamp-preview-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 3;
   }
 
   .tool-group,
@@ -1302,6 +1895,33 @@
   }
 
   .tool-btn.active {
+    background: var(--primary-color, #63b97b);
+    border-color: var(--primary-color, #63b97b);
+    color: #fff;
+  }
+
+  .eraser-mode-buttons {
+    display: flex;
+    gap: 0.5rem;
+  }
+
+  .mode-btn {
+    padding: 0.4rem 0.75rem;
+    background: #333;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    color: #ccc;
+    cursor: pointer;
+    font-size: 0.8rem;
+    transition: all 0.2s;
+  }
+
+  .mode-btn:hover {
+    background: #444;
+    color: #fff;
+  }
+
+  .mode-btn.active {
     background: var(--primary-color, #63b97b);
     border-color: var(--primary-color, #63b97b);
     color: #fff;

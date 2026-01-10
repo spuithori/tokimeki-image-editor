@@ -82,6 +82,7 @@
     "tool": "Tool",
     "pen": "Pen",
     "brush": "Brush",
+    "fill": "Fill",
     "eraser": "Eraser",
     "arrow": "Arrow",
     "rectangle": "Rectangle",
@@ -90,6 +91,12 @@
     "strokeWidth": "Stroke Width",
     "fontSize": "Font Size",
     "shadow": "Shadow",
+    "ignoreBackground": "Ignore Background",
+    "eraserMode": "Eraser Mode",
+    "eraserModeLayer": "Click on an annotation to delete it entirely",
+    "eraserModeLayerShort": "Layer",
+    "eraserModePaint": "Draw to erase parts of annotations",
+    "eraserModePaintShort": "Paint",
     "clearAll": "Clear All",
     "textPlaceholder": "Enter text..."
   }

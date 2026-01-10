@@ -4,6 +4,74 @@ import { applyAllAdjustments, applyGaussianBlur } from './adjustments';
 // Image cache for stamp images
 const stampImageCache = new Map<string, HTMLImageElement>();
 
+// Cache for fill annotation canvases to avoid recreating on every render
+// Key: annotation.id + color, Value: pre-rendered canvas with fill color applied
+const fillCanvasCache = new Map<string, HTMLCanvasElement>();
+
+/**
+ * Clear the fill canvas cache (call when annotations are modified)
+ */
+export function clearFillCanvasCache() {
+  fillCanvasCache.clear();
+}
+
+/**
+ * Get or create a cached fill canvas for an annotation
+ */
+export function getOrCreateFillCanvas(annotation: Annotation): HTMLCanvasElement | null {
+  if (annotation.type !== 'fill' || !annotation.fillMask) return null;
+
+  const cacheKey = `${annotation.id}-${annotation.color}`;
+  let cachedCanvas = fillCanvasCache.get(cacheKey);
+
+  if (cachedCanvas) {
+    return cachedCanvas;
+  }
+
+  // Create new fill canvas
+  const mask = annotation.fillMask;
+  const maskData = mask.data;
+
+  // Parse fill color
+  const color = annotation.color;
+  let r = 0, g = 0, b = 0;
+  if (color.startsWith('#')) {
+    const hex = color.slice(1);
+    if (hex.length === 3) {
+      r = parseInt(hex[0] + hex[0], 16);
+      g = parseInt(hex[1] + hex[1], 16);
+      b = parseInt(hex[2] + hex[2], 16);
+    } else if (hex.length === 6) {
+      r = parseInt(hex.slice(0, 2), 16);
+      g = parseInt(hex.slice(2, 4), 16);
+      b = parseInt(hex.slice(4, 6), 16);
+    }
+  }
+
+  // Create colored fill image
+  const fillImage = new ImageData(mask.width, mask.height);
+  for (let i = 0; i < maskData.length; i += 4) {
+    if (maskData[i + 3] > 0) {
+      fillImage.data[i] = r;
+      fillImage.data[i + 1] = g;
+      fillImage.data[i + 2] = b;
+      fillImage.data[i + 3] = 255;
+    }
+  }
+
+  // Create canvas and cache it
+  const canvas = document.createElement('canvas');
+  canvas.width = mask.width;
+  canvas.height = mask.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.putImageData(fillImage, 0, 0);
+  fillCanvasCache.set(cacheKey, canvas);
+
+  return canvas;
+}
+
 export function preloadStampImage(url: string): Promise<HTMLImageElement> {
   // Return cached image if available
   if (stampImageCache.has(url)) {
@@ -126,14 +194,14 @@ export async function drawImage(
     applyBlurAreas(canvas, img, viewport, blurAreas, cropArea);
   }
 
-  // Apply stamps
-  if (stampAreas && stampAreas.length > 0) {
-    applyStamps(canvas, img, viewport, stampAreas, cropArea);
-  }
-
-  // Apply annotations
+  // Apply annotations (below stamps)
   if (annotations && annotations.length > 0) {
     applyAnnotations(canvas, img, viewport, annotations, cropArea);
+  }
+
+  // Apply stamps (on top of annotations)
+  if (stampAreas && stampAreas.length > 0) {
+    applyStamps(canvas, img, viewport, stampAreas, cropArea);
   }
 }
 
@@ -222,14 +290,14 @@ export async function applyTransform(
     applyBlurAreas(canvas, img, exportViewport, blurAreas, cropArea);
   }
 
-  // Apply stamps for export
-  if (stampAreas.length > 0) {
-    applyStamps(canvas, img, exportViewport, stampAreas, cropArea);
-  }
-
-  // Apply annotations for export
+  // Apply annotations for export (below stamps)
   if (annotations.length > 0) {
     applyAnnotations(canvas, img, exportViewport, annotations, cropArea);
+  }
+
+  // Apply stamps for export (on top of annotations)
+  if (stampAreas.length > 0) {
+    applyStamps(canvas, img, exportViewport, stampAreas, cropArea);
   }
 
   return canvas;
@@ -280,11 +348,11 @@ export async function applyTransformWithWebGPU(
               offsetY: 0,
               scale: 1
             };
-            if (stampAreas.length > 0) {
-              applyStamps(finalCanvas, img, exportViewport, stampAreas, cropArea);
-            }
             if (annotations.length > 0) {
               applyAnnotations(finalCanvas, img, exportViewport, annotations, cropArea);
+            }
+            if (stampAreas.length > 0) {
+              applyStamps(finalCanvas, img, exportViewport, stampAreas, cropArea);
             }
 
             return finalCanvas;
@@ -537,7 +605,11 @@ export function applyStamps(
 
 /**
  * Apply annotation drawings to the canvas
- * Supports pen strokes, arrows, and rectangles
+ * Supports pen strokes, arrows, rectangles, and eraser strokes
+ *
+ * Eraser strokes only affect the annotation layer, not the background image.
+ * This is achieved by rendering annotations to a separate canvas first,
+ * then compositing onto the main canvas.
  */
 export function applyAnnotations(
   canvas: HTMLCanvasElement,
@@ -548,6 +620,9 @@ export function applyAnnotations(
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
+
+  // Check if there are any eraser strokes - if so, we need to use a separate layer
+  const hasEraserStrokes = annotations.some(a => a.type === 'eraser-stroke');
 
   const centerX = canvas.width / 2;
   const centerY = canvas.height / 2;
@@ -569,8 +644,108 @@ export function applyAnnotations(
     };
   };
 
-  annotations.forEach(annotation => {
-    if (annotation.points.length === 0) return;
+  // If there are eraser strokes, render annotations to a separate canvas first
+  // This ensures eraser only affects annotations, not the background image
+  if (hasEraserStrokes) {
+    // Create a temporary canvas for annotations
+    const annotationCanvas = document.createElement('canvas');
+    annotationCanvas.width = canvas.width;
+    annotationCanvas.height = canvas.height;
+    const annotationCtx = annotationCanvas.getContext('2d');
+    if (!annotationCtx) return;
+
+    // Helper to draw eraser stroke on annotation layer
+    const drawEraserStroke = (annotation: Annotation) => {
+      if (annotation.points.length === 0) return;
+
+      annotationCtx.save();
+      annotationCtx.globalCompositeOperation = 'destination-out';
+
+      const points = annotation.points.map(p => toCanvasCoords(p.x, p.y));
+      annotationCtx.strokeStyle = 'rgba(0,0,0,1)';
+      annotationCtx.lineWidth = annotation.strokeWidth * totalScale;
+      annotationCtx.lineCap = 'round';
+      annotationCtx.lineJoin = 'round';
+
+      if (points.length === 1) {
+        annotationCtx.beginPath();
+        annotationCtx.arc(points[0].x, points[0].y, annotation.strokeWidth * totalScale / 2, 0, Math.PI * 2);
+        annotationCtx.fill();
+      } else {
+        annotationCtx.beginPath();
+        annotationCtx.moveTo(points[0].x, points[0].y);
+
+        for (let i = 1; i < points.length - 1; i++) {
+          const curr = points[i];
+          const next = points[i + 1];
+          const midX = (curr.x + next.x) / 2;
+          const midY = (curr.y + next.y) / 2;
+          annotationCtx.quadraticCurveTo(curr.x, curr.y, midX, midY);
+        }
+
+        annotationCtx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+        annotationCtx.stroke();
+      }
+
+      annotationCtx.restore();
+    };
+
+    // Step 1: Draw fill annotations first (always at the bottom layer)
+    for (const annotation of annotations) {
+      if (annotation.type === 'fill') {
+        drawAnnotation(annotationCtx, annotation, toCanvasCoords, totalScale, centerX, centerY, sourceWidth, sourceHeight, offsetX, offsetY);
+      }
+    }
+
+    // Step 2: Draw other annotations and eraser strokes in order
+    for (const annotation of annotations) {
+      if (annotation.type === 'fill') {
+        continue;
+      } else if (annotation.type === 'eraser-stroke') {
+        drawEraserStroke(annotation);
+      } else {
+        drawAnnotation(annotationCtx, annotation, toCanvasCoords, totalScale, centerX, centerY, sourceWidth, sourceHeight, offsetX, offsetY);
+      }
+    }
+
+    // Composite annotation layer onto main canvas
+    ctx.drawImage(annotationCanvas, 0, 0);
+  } else {
+    // No eraser strokes - draw directly to canvas for better performance
+    // Step 1: Draw fill annotations first
+    for (const annotation of annotations) {
+      if (annotation.type === 'fill') {
+        drawAnnotation(ctx, annotation, toCanvasCoords, totalScale, centerX, centerY, sourceWidth, sourceHeight, offsetX, offsetY);
+      }
+    }
+
+    // Step 2: Draw other annotations
+    for (const annotation of annotations) {
+      if (annotation.type === 'fill') {
+        continue;
+      } else {
+        drawAnnotation(ctx, annotation, toCanvasCoords, totalScale, centerX, centerY, sourceWidth, sourceHeight, offsetX, offsetY);
+      }
+    }
+  }
+}
+
+/**
+ * Draw a single annotation (excluding eraser-stroke which is handled separately)
+ */
+function drawAnnotation(
+  ctx: CanvasRenderingContext2D,
+  annotation: Annotation,
+  toCanvasCoords: (x: number, y: number) => { x: number; y: number },
+  totalScale: number,
+  centerX: number,
+  centerY: number,
+  sourceWidth: number,
+  sourceHeight: number,
+  offsetX: number,
+  offsetY: number
+): void {
+  if (annotation.points.length === 0) return;
 
     ctx.save();
     ctx.strokeStyle = annotation.color;
@@ -890,8 +1065,22 @@ export function applyAnnotations(
       ctx.textAlign = 'left';
       ctx.textBaseline = 'alphabetic';
       ctx.fillText(annotation.text, pos.x, pos.y + scaledFontSize * 0.88);
+    } else if (annotation.type === 'fill' && annotation.fillMask) {
+      // Draw fill annotation using cached canvas for performance
+      const fillCanvas = getOrCreateFillCanvas(annotation);
+      if (fillCanvas) {
+        // Draw scaled and positioned on canvas
+        // Use toCanvasCoords for consistent coordinate transform with other annotations
+        // This ensures fill moves correctly with pan/zoom operations
+        const origin = toCanvasCoords(0, 0);
+        const destX = origin.x;
+        const destY = origin.y;
+        const destWidth = fillCanvas.width * totalScale;
+        const destHeight = fillCanvas.height * totalScale;
+
+        ctx.drawImage(fillCanvas, destX, destY, destWidth, destHeight);
+      }
     }
 
     ctx.restore();
-  });
 }

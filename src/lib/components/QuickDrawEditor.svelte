@@ -28,12 +28,13 @@
   } from '../utils/editor-core';
   import { DEFAULT_COLOR_PRESETS, DEFAULT_STROKE_WIDTH } from '../utils/colors';
   import Canvas from './Canvas.svelte';
-  import { Pencil, Brush } from 'lucide-svelte';
+  import { Pencil, Brush, PaintBucket } from 'lucide-svelte';
 
   interface Props {
     width?: number;
     initialImage?: File | string;
     colorPresets?: string[];
+    initialStrokeWidth?: number;
     onComplete: (dataUrl: string, blobObj: { blob: Blob; width: number; height: number }) => void;
     onCancel?: () => void;
   }
@@ -42,6 +43,7 @@
     width = 400,
     initialImage,
     colorPresets = DEFAULT_COLOR_PRESETS as unknown as string[],
+    initialStrokeWidth,
     onComplete,
     onCancel
   }: Props = $props();
@@ -54,10 +56,11 @@
   let canvasSize = $derived(width);
 
   // Tool settings (UI-specific state)
-  let currentTool = $state<'pen' | 'brush'>('pen');
+  let currentTool = $state<'pen' | 'brush' | 'fill'>('pen');
   let currentColor = $state(colorPresets[0]);
-  let strokeWidth = $state(DEFAULT_STROKE_WIDTH);
+  let strokeWidth = $state(initialStrokeWidth ?? DEFAULT_STROKE_WIDTH);
   let showStrokePopup = $state(false);
+  let showColorPopup = $state(false);
 
   // Main state (using single state variable pattern like ImageEditor)
   let state = $state<QuickDrawState>(createQuickDrawState());
@@ -88,6 +91,88 @@
       : state.annotations
   );
 
+  // Fill annotations need separate canvas rendering
+  let fillAnnotations = $derived(state.annotations.filter(a => a.type === 'fill'));
+
+  // Fill preview canvas reference
+  let fillCanvasElement = $state<HTMLCanvasElement | null>(null);
+
+  // Render fill annotations to canvas
+  $effect(() => {
+    if (!fillCanvasElement || !state.image || fillAnnotations.length === 0) {
+      // Clear canvas if no fill annotations
+      if (fillCanvasElement) {
+        const ctx = fillCanvasElement.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, fillCanvasElement.width, fillCanvasElement.height);
+      }
+      return;
+    }
+
+    const ctx = fillCanvasElement.getContext('2d');
+    if (!ctx) return;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, fillCanvasElement.width, fillCanvasElement.height);
+
+    // Calculate transform
+    const totalScale = state.viewport.scale * state.viewport.zoom;
+    const centerX = fillCanvasElement.width / 2;
+    const centerY = fillCanvasElement.height / 2;
+    const imageWidth = state.image.width;
+    const imageHeight = state.image.height;
+
+    // Draw each fill annotation
+    for (const annotation of fillAnnotations) {
+      if (annotation.type !== 'fill' || !annotation.fillMask) continue;
+
+      const mask = annotation.fillMask;
+      const maskData = mask.data;
+
+      // Parse fill color
+      const color = annotation.color;
+      let r = 0, g = 0, b = 0;
+      if (color.startsWith('#')) {
+        const hex = color.slice(1);
+        if (hex.length === 3) {
+          r = parseInt(hex[0] + hex[0], 16);
+          g = parseInt(hex[1] + hex[1], 16);
+          b = parseInt(hex[2] + hex[2], 16);
+        } else if (hex.length === 6) {
+          r = parseInt(hex.slice(0, 2), 16);
+          g = parseInt(hex.slice(2, 4), 16);
+          b = parseInt(hex.slice(4, 6), 16);
+        }
+      }
+
+      // Create colored fill image
+      const fillImage = new ImageData(mask.width, mask.height);
+      for (let i = 0; i < maskData.length; i += 4) {
+        if (maskData[i + 3] > 0) {
+          fillImage.data[i] = r;
+          fillImage.data[i + 1] = g;
+          fillImage.data[i + 2] = b;
+          fillImage.data[i + 3] = 255;
+        }
+      }
+
+      // Draw to temporary canvas at original size
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = mask.width;
+      tempCanvas.height = mask.height;
+      const tempCtx = tempCanvas.getContext('2d');
+      if (!tempCtx) continue;
+      tempCtx.putImageData(fillImage, 0, 0);
+
+      // Draw scaled and positioned on fill canvas
+      const destX = centerX - (imageWidth / 2) * totalScale + state.viewport.offsetX;
+      const destY = centerY - (imageHeight / 2) * totalScale + state.viewport.offsetY;
+      const destWidth = imageWidth * totalScale;
+      const destHeight = imageHeight * totalScale;
+
+      ctx.drawImage(tempCanvas, destX, destY, destWidth, destHeight);
+    }
+  });
+
   // Load background image (canvas is always square)
   async function loadBackgroundImage(): Promise<{ image: HTMLImageElement; fitScale: number }> {
     if (initialImage) {
@@ -115,7 +200,7 @@
   }
 
   function handleMouseDown(event: MouseEvent) {
-    state = handleQuickDrawMouseDown(state, event, editorContext, currentTool, currentColor, strokeWidth);
+    state = handleQuickDrawMouseDown(state, event, editorContext, currentTool, currentColor, strokeWidth, true);
   }
 
   function handleMouseMove(event: MouseEvent) {
@@ -127,7 +212,7 @@
   }
 
   function handleTouchStart(event: TouchEvent) {
-    state = handleQuickDrawTouchStart(state, event, editorContext, currentTool, currentColor, strokeWidth);
+    state = handleQuickDrawTouchStart(state, event, editorContext, currentTool, currentColor, strokeWidth, true);
   }
 
   function handleTouchMove(event: TouchEvent) {
@@ -167,6 +252,9 @@
     const target = event.target as HTMLElement;
     if (showStrokePopup && !target.closest('.stroke-control')) {
       showStrokePopup = false;
+    }
+    if (showColorPopup && !target.closest('.color-control')) {
+      showColorPopup = false;
     }
   }
 
@@ -211,10 +299,19 @@
       onZoom={handleZoom}
     />
 
+    <!-- Fill preview canvas (behind SVG overlay) -->
+    <canvas
+      bind:this={fillCanvasElement}
+      class="fill-canvas"
+      width={canvasSize}
+      height={canvasSize}
+    ></canvas>
+
     <div
       bind:this={overlayElement}
       class="drawing-overlay"
       class:panning={shouldPan(state.interactionState) || state.interactionState.isPanning}
+      class:fill-tool={currentTool === 'fill'}
       onmousedown={handleMouseDown}
       role="button"
       tabindex="-1"
@@ -257,6 +354,7 @@
     <div class="tool-group">
       <button class="tool-btn" class:active={currentTool === 'pen'} onclick={() => currentTool = 'pen'} title="Pen"><Pencil size={18} /></button>
       <button class="tool-btn" class:active={currentTool === 'brush'} onclick={() => currentTool = 'brush'} title="Brush"><Brush size={18} /></button>
+      <button class="tool-btn" class:active={currentTool === 'fill'} onclick={() => currentTool = 'fill'} title="Fill"><PaintBucket size={18} /></button>
     </div>
     <div class="stroke-control">
       <button
@@ -279,16 +377,35 @@
         </div>
       {/if}
     </div>
-    <div class="color-group">
-      {#each colorPresets.slice(0, 3) as color}
-        <button class="color-btn" class:active={currentColor === color} style="background-color: {color}" onclick={() => currentColor = color} title={color}></button>
-      {/each}
-      <input
-        type="color"
-        class="color-picker"
-        value={currentColor}
-        oninput={(e) => currentColor = e.currentTarget.value}
-      />
+    <div class="color-control">
+      <button
+        class="color-trigger"
+        onclick={() => showColorPopup = !showColorPopup}
+        title="Color"
+      >
+        <span class="color-indicator" style="background-color: {currentColor};"></span>
+      </button>
+      {#if showColorPopup}
+        <div class="color-popup">
+          <div class="color-presets">
+            {#each colorPresets as color}
+              <button
+                class="color-btn"
+                class:active={currentColor === color}
+                style="background-color: {color}"
+                onclick={() => { currentColor = color; showColorPopup = false; }}
+                title={color}
+              ></button>
+            {/each}
+          </div>
+          <input
+            type="color"
+            class="color-picker-input"
+            value={currentColor}
+            oninput={(e) => currentColor = e.currentTarget.value}
+          />
+        </div>
+      {/if}
     </div>
     <div class="action-group">
       <button class="undo-btn" onclick={handleUndo} disabled={state.annotations.length === 0} title="Undo">
@@ -333,6 +450,15 @@
         display: none;
     }
 
+    .fill-canvas {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+    }
+
     .drawing-overlay {
         position: absolute;
         top: 0;
@@ -342,6 +468,10 @@
         cursor: crosshair;
         user-select: none;
         touch-action: none;
+    }
+
+    .drawing-overlay.fill-tool {
+        cursor: cell;
     }
 
     .drawing-overlay.panning {
@@ -485,12 +615,54 @@
         text-align: right;
     }
 
-    .color-group {
+    .color-control {
+        position: relative;
+    }
+
+    .color-trigger {
         display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: none;
+        border-radius: 8px;
+        background: #f1f5f9;
+        cursor: pointer;
+        transition: all 0.15s;
+    }
+
+    .color-trigger:hover {
+        background: #e2e8f0;
+    }
+
+    .color-indicator {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        border: 2px solid white;
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+    }
+
+    .color-popup {
+        position: absolute;
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        background: white;
+        border-radius: 10px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+        z-index: 10;
+    }
+
+    .color-presets {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
         gap: 6px;
-        padding: 0 8px;
-        border-left: 1px solid #e2e8f0;
-        border-right: 1px solid #e2e8f0;
     }
 
     .color-btn {
@@ -511,22 +683,22 @@
         box-shadow: 0 0 0 2px white, 0 0 0 4px currentColor;
     }
 
-    .color-picker {
-        width: 24px;
-        height: 24px;
+    .color-picker-input {
+        width: 100%;
+        height: 28px;
         border: none;
-        border-radius: 50%;
+        border-radius: 6px;
         padding: 0;
         cursor: pointer;
         background: transparent;
     }
 
-    .color-picker::-webkit-color-swatch-wrapper {
-        padding: 0;
+    .color-picker-input::-webkit-color-swatch-wrapper {
+        padding: 2px;
     }
 
-    .color-picker::-webkit-color-swatch {
-        border-radius: 50%;
+    .color-picker-input::-webkit-color-swatch {
+        border-radius: 4px;
         border: 1px solid #e2e8f0;
     }
 
