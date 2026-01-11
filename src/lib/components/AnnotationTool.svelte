@@ -2,7 +2,12 @@
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
   import type { Annotation, AnnotationType, AnnotationPoint, Viewport, TransformState, CropArea, StampArea } from '../types';
-  import { screenToImageCoords, getOrCreateFillCanvas, applyStamps } from '../utils/canvas';
+  import { screenToImageCoords, getOrCreateFillCanvas, applyStamps, applyAnnotations } from '../utils/canvas';
+  import {
+    initAnnotationWebGPU,
+    cancelPendingRenders,
+    clearAnnotationTextureCache
+  } from '../utils/webgpu-annotation';
   import {
     getEventCoords,
     createPenAnnotation,
@@ -198,7 +203,18 @@
     return sharedImageToCanvasCoords(point, coordContext);
   }
 
+  // WebGPU state for annotation rendering
+  let useWebGPUAnnotations = $state(false);
+
   onMount(() => {
+    // Initialize WebGPU for annotations
+    initAnnotationWebGPU().then((success) => {
+      useWebGPUAnnotations = success;
+      if (success) {
+        console.log('WebGPU annotation rendering enabled');
+      }
+    });
+
     if (containerElement) {
       containerElement.addEventListener('touchstart', handleTouchStart as any, { passive: false });
       containerElement.addEventListener('touchmove', handleTouchMove as any, { passive: false });
@@ -211,6 +227,9 @@
         containerElement.removeEventListener('touchmove', handleTouchMove as any);
         containerElement.removeEventListener('touchend', handleTouchEnd as any);
       }
+      // Cleanup WebGPU resources on unmount
+      cancelPendingRenders();
+      clearAnnotationTextureCache();
     };
   });
 
@@ -841,6 +860,8 @@
   });
 
   // Check if there are any fill or eraser strokes (requires Canvas rendering)
+  // SVG is used for pen/brush/arrow/rectangle/text for sharp vector rendering
+  // Canvas is required for fill (flood fill algorithm) and eraser (destination-out compositing)
   let hasFillAnnotations = $derived(annotations.some(a => a.type === 'fill'));
   let hasEraserStrokes = $derived(
     annotations.some(a => a.type === 'eraser-stroke') ||
@@ -848,413 +869,44 @@
   );
 
   // Use Canvas rendering when fill or eraser strokes exist
-  // This ensures proper compositing (destination-out for eraser, fill at bottom layer)
   let useCanvasRendering = $derived(hasFillAnnotations || hasEraserStrokes);
 
   // Annotation canvas reference (used when fill or eraser strokes exist)
   let annotationCanvasElement = $state<HTMLCanvasElement | null>(null);
 
-  // Render all annotations to canvas when fill or eraser strokes exist
-  // This allows proper compositing (fill at bottom, eraser with destination-out)
-  // Matches the logic in canvas.ts applyAnnotations
+  // ANNOTATION RENDERING
+  // SVG is used for most annotations (sharp vector rendering)
+  // Canvas is only used when fill or eraser strokes exist (require special compositing)
   $effect(() => {
     if (!annotationCanvasElement || !canvas || !image) return;
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Ensure canvas size matches parent
+    if (annotationCanvasElement.width !== width || annotationCanvasElement.height !== height) {
+      annotationCanvasElement.width = width;
+      annotationCanvasElement.height = height;
+    }
 
     const ctx = annotationCanvasElement.getContext('2d');
     if (!ctx) return;
 
-    // Ensure canvas size matches parent
-    if (annotationCanvasElement.width !== canvas.width || annotationCanvasElement.height !== canvas.height) {
-      annotationCanvasElement.width = canvas.width;
-      annotationCanvasElement.height = canvas.height;
-    }
-
     // Clear canvas
-    ctx.clearRect(0, 0, annotationCanvasElement.width, annotationCanvasElement.height);
+    ctx.clearRect(0, 0, width, height);
 
-    // Only render when canvas rendering is needed (fill or eraser strokes exist)
+    // Only render to canvas when fill or eraser strokes exist
     if (!useCanvasRendering) return;
 
-    // Calculate transform
-    const totalScale = viewport.scale * viewport.zoom;
-    const centerX = annotationCanvasElement.width / 2;
-    const centerY = annotationCanvasElement.height / 2;
-    const imageWidth = image.width;
-    const imageHeight = image.height;
-    const cropOffsetX = cropArea ? cropArea.x : 0;
-    const cropOffsetY = cropArea ? cropArea.y : 0;
-    const sourceWidth = cropArea ? cropArea.width : imageWidth;
-    const sourceHeight = cropArea ? cropArea.height : imageHeight;
-
-    // Helper to convert image coords to canvas coords
-    const toCanvas = (point: AnnotationPoint) => ({
-      x: (point.x - cropOffsetX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX,
-      y: (point.y - cropOffsetY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY
-    });
-
-    // Calculate origin for fill rendering (canvas position of image (0,0))
-    const originX = (0 - cropOffsetX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX;
-    const originY = (0 - cropOffsetY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY;
-
-    // Build list of all annotations including current
-    const allAnnotations = currentAnnotation
-      ? [...annotations, currentAnnotation]
-      : annotations;
-
-    // Step 1: Draw fill annotations first (always at bottom layer)
-    for (const annotation of allAnnotations) {
-      if (annotation.type !== 'fill') continue;
-
-      const fillCanvas = getOrCreateFillCanvas(annotation);
-      if (!fillCanvas) continue;
-
-      ctx.drawImage(
-        fillCanvas,
-        originX,
-        originY,
-        fillCanvas.width * totalScale,
-        fillCanvas.height * totalScale
-      );
-    }
-
-    // Step 2: Draw other annotations and eraser strokes in order
-    // Eraser strokes affect all previously drawn content (including fills)
-
-    // Process annotations in order - eraser strokes affect all previously drawn content
-    for (const annotation of allAnnotations) {
-      // Skip fill annotations (already drawn in Step 1)
-      if (annotation.type === 'fill') continue;
-
-      if (annotation.type === 'eraser-stroke') {
-        // Apply eraser stroke using destination-out
-        if (annotation.points.length === 0) continue;
-
-        ctx.save();
-        ctx.globalCompositeOperation = 'destination-out';
-
-        const points = annotation.points.map(toCanvas);
-        ctx.strokeStyle = 'rgba(0,0,0,1)';
-        ctx.lineWidth = annotation.strokeWidth * totalScale;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        if (points.length === 1) {
-          ctx.beginPath();
-          ctx.arc(points[0].x, points[0].y, annotation.strokeWidth * totalScale / 2, 0, Math.PI * 2);
-          ctx.fill();
-        } else {
-          ctx.beginPath();
-          ctx.moveTo(points[0].x, points[0].y);
-          for (let i = 1; i < points.length - 1; i++) {
-            const p0 = points[i];
-            const p1 = points[i + 1];
-            const midX = (p0.x + p1.x) / 2;
-            const midY = (p0.y + p1.y) / 2;
-            ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
-          }
-          ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
-          ctx.stroke();
-        }
-
-        ctx.restore();
-        continue;
-      }
-
-      // Draw non-eraser annotation
-      if (annotation.points.length === 0) continue;
-
-      ctx.save();
-
-      // Apply shadow if enabled
-      if (annotation.shadow) {
-        ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        ctx.shadowBlur = 6;
-        ctx.shadowOffsetX = 2;
-        ctx.shadowOffsetY = 2;
-      }
-
-      if (annotation.type === 'pen') {
-        const points = annotation.points.map(toCanvas);
-        ctx.strokeStyle = annotation.color;
-        ctx.lineWidth = annotation.strokeWidth * totalScale;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-
-        if (points.length === 1) {
-          ctx.fillStyle = annotation.color;
-          ctx.beginPath();
-          ctx.arc(points[0].x, points[0].y, annotation.strokeWidth * totalScale / 2, 0, Math.PI * 2);
-          ctx.fill();
-        } else {
-          ctx.beginPath();
-          ctx.moveTo(points[0].x, points[0].y);
-          for (let i = 1; i < points.length - 1; i++) {
-            const p0 = points[i];
-            const p1 = points[i + 1];
-            const midX = (p0.x + p1.x) / 2;
-            const midY = (p0.y + p1.y) / 2;
-            ctx.quadraticCurveTo(p0.x, p0.y, midX, midY);
-          }
-          ctx.lineTo(points[points.length - 1].x, points[points.length - 1].y);
-          ctx.stroke();
-        }
-      } else if (annotation.type === 'brush') {
-        const rawPoints = annotation.points.map(p => ({
-          ...toCanvas(p),
-          width: p.width ?? annotation.strokeWidth
-        }));
-        ctx.fillStyle = annotation.color;
-
-        if (rawPoints.length === 1) {
-          // Single point - elliptical brush mark
-          const p = rawPoints[0];
-          const width = (p.width * totalScale) / 2;
-          const rx = width * 0.8;
-          const ry = width * 1.2;
-          ctx.beginPath();
-          ctx.ellipse(p.x, p.y, rx, ry, 0, 0, Math.PI * 2);
-          ctx.fill();
-        } else if (rawPoints.length === 2) {
-          // Two points - teardrop shape
-          const p1 = rawPoints[0];
-          const p2 = rawPoints[1];
-          const w1 = ((p1.width ?? annotation.strokeWidth * 0.3) * totalScale) / 2;
-          const w2 = ((p2.width ?? annotation.strokeWidth * 0.5) * totalScale) / 2;
-
-          const dx = p2.x - p1.x;
-          const dy = p2.y - p1.y;
-          const len = Math.sqrt(dx * dx + dy * dy);
-          if (len > 0) {
-            const nx = -dy / len;
-            const ny = dx / len;
-
-            const tipExtend = w2 * 0.3;
-            const tipX = p2.x + (dx / len) * tipExtend;
-            const tipY = p2.y + (dy / len) * tipExtend;
-
-            ctx.beginPath();
-            ctx.moveTo(p1.x + nx * w1, p1.y + ny * w1);
-            ctx.quadraticCurveTo(
-              (p1.x + nx * w1 + p2.x + nx * w2) / 2 + nx * w2 * 0.3,
-              (p1.y + ny * w1 + p2.y + ny * w2) / 2 + ny * w2 * 0.3,
-              p2.x + nx * w2, p2.y + ny * w2
-            );
-            ctx.quadraticCurveTo(tipX + nx * w2 * 0.2, tipY + ny * w2 * 0.2, tipX, tipY);
-            ctx.quadraticCurveTo(tipX - nx * w2 * 0.2, tipY - ny * w2 * 0.2, p2.x - nx * w2, p2.y - ny * w2);
-            ctx.quadraticCurveTo(
-              (p1.x - nx * w1 + p2.x - nx * w2) / 2 - nx * w2 * 0.3,
-              (p1.y - ny * w1 + p2.y - ny * w2) / 2 - ny * w2 * 0.3,
-              p1.x - nx * w1, p1.y - ny * w1
-            );
-            ctx.closePath();
-            ctx.fill();
-          }
-        } else {
-          // 3+ points - interpolate for smooth outline
-          const interpolated: { x: number; y: number; width: number }[] = [];
-          for (let i = 0; i < rawPoints.length - 1; i++) {
-            const p1 = rawPoints[i];
-            const p2 = rawPoints[i + 1];
-            const dist = Math.sqrt(Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2));
-
-            interpolated.push(p1);
-
-            const interpolateCount = Math.floor(dist / 5);
-            for (let j = 1; j < interpolateCount; j++) {
-              const t = j / interpolateCount;
-              const smoothT = t * t * (3 - 2 * t);
-              interpolated.push({
-                x: p1.x + (p2.x - p1.x) * t,
-                y: p1.y + (p2.y - p1.y) * t,
-                width: p1.width + (p2.width - p1.width) * smoothT
-              });
-            }
-          }
-          interpolated.push(rawPoints[rawPoints.length - 1]);
-
-          // Generate outline
-          let leftSide: { x: number; y: number }[] = [];
-          let rightSide: { x: number; y: number }[] = [];
-
-          for (let i = 0; i < interpolated.length; i++) {
-            const curr = interpolated[i];
-            const width = (curr.width * totalScale) / 2;
-
-            let dx: number, dy: number;
-            if (i === 0) {
-              dx = interpolated[1].x - curr.x;
-              dy = interpolated[1].y - curr.y;
-            } else if (i === interpolated.length - 1) {
-              dx = curr.x - interpolated[i - 1].x;
-              dy = curr.y - interpolated[i - 1].y;
-            } else {
-              const lookback = Math.min(i, 3);
-              const lookforward = Math.min(interpolated.length - 1 - i, 3);
-              dx = interpolated[i + lookforward].x - interpolated[i - lookback].x;
-              dy = interpolated[i + lookforward].y - interpolated[i - lookback].y;
-            }
-
-            const len = Math.sqrt(dx * dx + dy * dy);
-            if (len === 0) continue;
-
-            const nx = -dy / len;
-            const ny = dx / len;
-
-            leftSide.push({ x: curr.x + nx * width, y: curr.y + ny * width });
-            rightSide.push({ x: curr.x - nx * width, y: curr.y - ny * width });
-          }
-
-          // Smooth outline
-          const smoothOutline = (pts: { x: number; y: number }[], windowSize: number = 5) => {
-            if (pts.length < 3) return pts;
-            const result: { x: number; y: number }[] = [];
-            const halfWindow = Math.floor(windowSize / 2);
-            for (let i = 0; i < pts.length; i++) {
-              if (i < halfWindow || i >= pts.length - halfWindow) {
-                result.push(pts[i]);
-                continue;
-              }
-              let sumX = 0, sumY = 0, count = 0;
-              for (let j = -halfWindow; j <= halfWindow; j++) {
-                const idx = i + j;
-                if (idx >= 0 && idx < pts.length) {
-                  sumX += pts[idx].x;
-                  sumY += pts[idx].y;
-                  count++;
-                }
-              }
-              result.push({ x: sumX / count, y: sumY / count });
-            }
-            return result;
-          };
-
-          leftSide = smoothOutline(leftSide);
-          rightSide = smoothOutline(rightSide);
-
-          if (leftSide.length >= 2) {
-            ctx.beginPath();
-            ctx.moveTo(leftSide[0].x, leftSide[0].y);
-
-            // Left side
-            for (let i = 1; i < leftSide.length - 1; i++) {
-              const curr = leftSide[i];
-              const next = leftSide[i + 1];
-              const endX = (curr.x + next.x) / 2;
-              const endY = (curr.y + next.y) / 2;
-              ctx.quadraticCurveTo(curr.x, curr.y, endX, endY);
-            }
-            ctx.lineTo(leftSide[leftSide.length - 1].x, leftSide[leftSide.length - 1].y);
-
-            // End cap
-            const lastPoint = interpolated[interpolated.length - 1];
-            const lastWidth = (lastPoint.width * totalScale) / 2;
-            const tipExtend = lastWidth * 0.4;
-            const lastDx = interpolated.length > 1
-              ? interpolated[interpolated.length - 1].x - interpolated[interpolated.length - 2].x
-              : 0;
-            const lastDy = interpolated.length > 1
-              ? interpolated[interpolated.length - 1].y - interpolated[interpolated.length - 2].y
-              : 0;
-            const lastLen = Math.sqrt(lastDx * lastDx + lastDy * lastDy);
-
-            if (lastLen > 0) {
-              const tipX = lastPoint.x + (lastDx / lastLen) * tipExtend;
-              const tipY = lastPoint.y + (lastDy / lastLen) * tipExtend;
-              ctx.quadraticCurveTo(tipX, tipY, rightSide[rightSide.length - 1].x, rightSide[rightSide.length - 1].y);
-            } else {
-              ctx.lineTo(rightSide[rightSide.length - 1].x, rightSide[rightSide.length - 1].y);
-            }
-
-            // Right side backward
-            for (let i = rightSide.length - 2; i > 0; i--) {
-              const curr = rightSide[i];
-              const prev = rightSide[i - 1];
-              const endX = (curr.x + prev.x) / 2;
-              const endY = (curr.y + prev.y) / 2;
-              ctx.quadraticCurveTo(curr.x, curr.y, endX, endY);
-            }
-            ctx.lineTo(rightSide[0].x, rightSide[0].y);
-
-            // Start cap
-            const firstPoint = interpolated[0];
-            const firstWidth = (firstPoint.width * totalScale) / 2;
-            const startExtend = firstWidth * 0.3;
-            const firstDx = interpolated.length > 1
-              ? interpolated[0].x - interpolated[1].x
-              : 0;
-            const firstDy = interpolated.length > 1
-              ? interpolated[0].y - interpolated[1].y
-              : 0;
-            const firstLen = Math.sqrt(firstDx * firstDx + firstDy * firstDy);
-
-            if (firstLen > 0) {
-              const startTipX = firstPoint.x + (firstDx / firstLen) * startExtend;
-              const startTipY = firstPoint.y + (firstDy / firstLen) * startExtend;
-              ctx.quadraticCurveTo(startTipX, startTipY, leftSide[0].x, leftSide[0].y);
-            }
-
-            ctx.closePath();
-            ctx.fill();
-          }
-        }
-      } else if (annotation.type === 'arrow') {
-        if (annotation.points.length >= 2) {
-          const start = toCanvas(annotation.points[0]);
-          const end = toCanvas(annotation.points[1]);
-          const angle = Math.atan2(end.y - start.y, end.x - start.x);
-          const scaledStroke = annotation.strokeWidth * totalScale;
-          const headLength = scaledStroke * 3;
-          const headWidth = scaledStroke * 2;
-          const lineEndX = end.x - headLength * 0.7 * Math.cos(angle);
-          const lineEndY = end.y - headLength * 0.7 * Math.sin(angle);
-
-          ctx.strokeStyle = annotation.color;
-          ctx.lineWidth = scaledStroke;
-          ctx.lineCap = 'round';
-
-          ctx.beginPath();
-          ctx.moveTo(start.x, start.y);
-          ctx.lineTo(lineEndX, lineEndY);
-          ctx.stroke();
-
-          ctx.fillStyle = annotation.color;
-          ctx.beginPath();
-          ctx.moveTo(end.x, end.y);
-          ctx.lineTo(end.x - headLength * Math.cos(angle) + headWidth * Math.sin(angle),
-                     end.y - headLength * Math.sin(angle) - headWidth * Math.cos(angle));
-          ctx.lineTo(end.x - headLength * Math.cos(angle) - headWidth * Math.sin(angle),
-                     end.y - headLength * Math.sin(angle) + headWidth * Math.cos(angle));
-          ctx.closePath();
-          ctx.fill();
-        }
-      } else if (annotation.type === 'rectangle') {
-        if (annotation.points.length >= 2) {
-          const p0 = toCanvas(annotation.points[0]);
-          const p1 = toCanvas(annotation.points[1]);
-          const x = Math.min(p0.x, p1.x);
-          const y = Math.min(p0.y, p1.y);
-          const w = Math.abs(p1.x - p0.x);
-          const h = Math.abs(p1.y - p0.y);
-          const cornerRadius = annotation.strokeWidth * totalScale * 1.5;
-
-          ctx.strokeStyle = annotation.color;
-          ctx.lineWidth = annotation.strokeWidth * totalScale;
-          ctx.beginPath();
-          ctx.roundRect(x, y, w, h, cornerRadius);
-          ctx.stroke();
-        }
-      } else if (annotation.type === 'text' && annotation.text) {
-        const point = toCanvas(annotation.points[0]);
-        const scaledFontSize = (annotation.fontSize ?? 48) * totalScale;
-
-        ctx.fillStyle = annotation.color;
-        ctx.font = `bold ${scaledFontSize}px sans-serif`;
-        ctx.textBaseline = 'top';
-        ctx.fillText(annotation.text, point.x, point.y);
-      }
-
-      ctx.restore();
-    }
+    // Render annotations using canvas-coordinate rendering
+    applyAnnotations(
+      annotationCanvasElement,
+      image,
+      viewport,
+      annotations,
+      cropArea,
+      currentAnnotation
+    );
   });
 
   // Stamp canvas reference (stamps are rendered on top of annotations)
@@ -1306,208 +958,235 @@
   role="button"
   tabindex="-1"
 >
-  <!-- Annotation canvas (used when fill or eraser strokes exist for proper compositing) -->
+  <!-- Annotation canvas (always used for high-performance rendering) -->
   {#if canvas}
     <canvas
       bind:this={annotationCanvasElement}
       class="annotation-preview-canvas"
-      class:visible={useCanvasRendering}
       width={canvas.width}
       height={canvas.height}
     ></canvas>
   {/if}
 
-  <svg class="annotation-tool-svg" class:hidden={useCanvasRendering}>
-    <!-- Shadow filter definition -->
-    <defs>
-      <filter id="annotation-shadow" x="-50%" y="-50%" width="200%" height="200%">
-        <feDropShadow dx="2" dy="2" stdDeviation="3" flood-color="rgba(0,0,0,0.5)" />
-      </filter>
-    </defs>
+  <!-- SVG rendering for sharp vector graphics (used when no fill/eraser) -->
+  {#if !useCanvasRendering}
+    <svg class="annotation-tool-svg">
+      <!-- Shadow filter definition -->
+      <defs>
+        <filter id="annotation-shadow" x="-50%" y="-50%" width="200%" height="200%">
+          <feDropShadow dx="2" dy="2" stdDeviation="3" flood-color="rgba(0,0,0,0.5)" />
+        </filter>
+      </defs>
 
-    <!-- Render existing annotations -->
-    {#each annotations as annotation (annotation.id)}
-      {@const points = annotation.points.map(p => toCanvasCoords(p)).filter(Boolean) as { x: number; y: number }[]}
-      {@const totalScale = viewport.scale * viewport.zoom}
-      {@const shadowFilter = annotation.shadow ? 'url(#annotation-shadow)' : 'none'}
+      <!-- Render existing annotations -->
+      {#each annotations as annotation (annotation.id)}
+        {@const points = annotation.points.map(p => toCanvasCoords(p)).filter(Boolean) as { x: number; y: number }[]}
+        {@const totalScale = viewport.scale * viewport.zoom}
+        {@const shadowFilter = annotation.shadow ? 'url(#annotation-shadow)' : 'none'}
 
-      {#if annotation.type === 'pen' && points.length > 0}
-        {#if points.length === 1}
-          <!-- Single point - draw a dot -->
-          <circle
-            cx={points[0].x}
-            cy={points[0].y}
-            r={annotation.strokeWidth * totalScale / 2}
+        {#if annotation.type === 'pen' && points.length > 0}
+          {#if points.length === 1}
+            <circle
+              cx={points[0].x}
+              cy={points[0].y}
+              r={annotation.strokeWidth * totalScale / 2}
+              fill={annotation.color}
+              filter={shadowFilter}
+            />
+          {:else}
+            <path
+              d={generateSmoothPath(points)}
+              fill="none"
+              stroke={annotation.color}
+              stroke-width={annotation.strokeWidth * totalScale}
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              filter={shadowFilter}
+            />
+          {/if}
+        {:else if annotation.type === 'brush' && points.length >= 1}
+          {@const brushPoints = annotation.points.map(p => {
+            const canvasCoords = toCanvasCoords(p);
+            if (!canvasCoords) return null;
+            return { ...canvasCoords, width: p.width };
+          }).filter(Boolean) as { x: number; y: number; width?: number }[]}
+          <path
+            d={generateBrushPath(brushPoints, annotation.strokeWidth, totalScale)}
             fill={annotation.color}
+            stroke="none"
             filter={shadowFilter}
           />
-        {:else}
-          <path
-            d={generateSmoothPath(points)}
+        {:else if annotation.type === 'arrow' && points.length >= 2}
+          {@const start = points[0]}
+          {@const end = points[1]}
+          {@const angle = Math.atan2(end.y - start.y, end.x - start.x)}
+          {@const scaledStroke = annotation.strokeWidth * totalScale}
+          {@const headLength = scaledStroke * 3}
+          {@const headWidth = scaledStroke * 2}
+          {@const lineEndX = end.x - headLength * 0.7 * Math.cos(angle)}
+          {@const lineEndY = end.y - headLength * 0.7 * Math.sin(angle)}
+
+          <g filter={shadowFilter}>
+            <line
+              x1={start.x}
+              y1={start.y}
+              x2={lineEndX}
+              y2={lineEndY}
+              stroke={annotation.color}
+              stroke-width={scaledStroke}
+              stroke-linecap="round"
+            />
+            <polygon
+              points="{end.x},{end.y} {end.x - headLength * Math.cos(angle) + headWidth * Math.sin(angle)},{end.y - headLength * Math.sin(angle) - headWidth * Math.cos(angle)} {end.x - headLength * Math.cos(angle) - headWidth * Math.sin(angle)},{end.y - headLength * Math.sin(angle) + headWidth * Math.cos(angle)}"
+              fill={annotation.color}
+            />
+          </g>
+        {:else if annotation.type === 'rectangle' && points.length >= 2}
+          {@const x = Math.min(points[0].x, points[1].x)}
+          {@const y = Math.min(points[0].y, points[1].y)}
+          {@const w = Math.abs(points[1].x - points[0].x)}
+          {@const h = Math.abs(points[1].y - points[0].y)}
+          {@const cornerRadius = annotation.strokeWidth * totalScale * 1.5}
+
+          <rect
+            x={x}
+            y={y}
+            width={w}
+            height={h}
+            rx={cornerRadius}
+            ry={cornerRadius}
             fill="none"
             stroke={annotation.color}
             stroke-width={annotation.strokeWidth * totalScale}
-            stroke-linecap="round"
-            stroke-linejoin="round"
             filter={shadowFilter}
           />
-        {/if}
-      {:else if annotation.type === 'brush' && points.length >= 1}
-        {@const brushPoints = annotation.points.map(p => {
-          const canvasCoords = toCanvasCoords(p);
-          if (!canvasCoords) return null;
-          return { ...canvasCoords, width: p.width };
-        }).filter(Boolean) as { x: number; y: number; width?: number }[]}
-        <path
-          d={generateBrushPath(brushPoints, annotation.strokeWidth, totalScale)}
-          fill={annotation.color}
-          stroke="none"
-          filter={shadowFilter}
-        />
-      {:else if annotation.type === 'arrow' && points.length >= 2}
-        {@const start = points[0]}
-        {@const end = points[1]}
-        {@const angle = Math.atan2(end.y - start.y, end.x - start.x)}
-        {@const scaledStroke = annotation.strokeWidth * totalScale}
-        {@const headLength = scaledStroke * 3}
-        {@const headWidth = scaledStroke * 2}
-        {@const lineEndX = end.x - headLength * 0.7 * Math.cos(angle)}
-        {@const lineEndY = end.y - headLength * 0.7 * Math.sin(angle)}
-
-        <g filter={shadowFilter}>
-          <line
-            x1={start.x}
-            y1={start.y}
-            x2={lineEndX}
-            y2={lineEndY}
-            stroke={annotation.color}
-            stroke-width={scaledStroke}
-            stroke-linecap="round"
-          />
-          <polygon
-            points="{end.x},{end.y} {end.x - headLength * Math.cos(angle) + headWidth * Math.sin(angle)},{end.y - headLength * Math.sin(angle) - headWidth * Math.cos(angle)} {end.x - headLength * Math.cos(angle) - headWidth * Math.sin(angle)},{end.y - headLength * Math.sin(angle) + headWidth * Math.cos(angle)}"
+        {:else if annotation.type === 'text' && points.length >= 1 && annotation.text && annotation.id !== editingTextId}
+          {@const scaledFontSize = (annotation.fontSize ?? 48) * totalScale}
+          <text
+            x={points[0].x}
+            y={points[0].y + scaledFontSize * 0.88}
             fill={annotation.color}
-          />
-        </g>
-      {:else if annotation.type === 'rectangle' && points.length >= 2}
-        {@const x = Math.min(points[0].x, points[1].x)}
-        {@const y = Math.min(points[0].y, points[1].y)}
-        {@const w = Math.abs(points[1].x - points[0].x)}
-        {@const h = Math.abs(points[1].y - points[0].y)}
-        {@const cornerRadius = annotation.strokeWidth * totalScale * 1.5}
+            font-size={scaledFontSize}
+            font-family="sans-serif"
+            font-weight="bold"
+            dominant-baseline="alphabetic"
+            filter={shadowFilter}
+          >{annotation.text}</text>
+        {/if}
+      {/each}
 
-        <rect
-          x={x}
-          y={y}
-          width={w}
-          height={h}
-          rx={cornerRadius}
-          ry={cornerRadius}
-          fill="none"
-          stroke={annotation.color}
-          stroke-width={annotation.strokeWidth * totalScale}
-          filter={shadowFilter}
-        />
-      {:else if annotation.type === 'text' && points.length >= 1 && annotation.text && annotation.id !== editingTextId}
-        {@const scaledFontSize = (annotation.fontSize ?? 48) * totalScale}
-        <text
-          x={points[0].x}
-          y={points[0].y + scaledFontSize * 0.88}
-          fill={annotation.color}
-          font-size={scaledFontSize}
-          font-family="sans-serif"
-          font-weight="bold"
-          dominant-baseline="alphabetic"
-          filter={shadowFilter}
-        >{annotation.text}</text>
-      {/if}
-    {/each}
+      <!-- Render current annotation being drawn -->
+      {#if currentAnnotationCanvas && currentAnnotationCanvas.canvasPoints.length > 0}
+        {@const points = currentAnnotationCanvas.canvasPoints}
+        {@const totalScale = viewport.scale * viewport.zoom}
+        {@const currentShadowFilter = currentAnnotationCanvas.shadow ? 'url(#annotation-shadow)' : 'none'}
 
-    <!-- Render current annotation being drawn -->
-    {#if currentAnnotationCanvas && currentAnnotationCanvas.canvasPoints.length > 0}
-      {@const points = currentAnnotationCanvas.canvasPoints}
-      {@const totalScale = viewport.scale * viewport.zoom}
-      {@const currentShadowFilter = currentAnnotationCanvas.shadow ? 'url(#annotation-shadow)' : 'none'}
-
-      {#if currentAnnotationCanvas.type === 'pen'}
-        {#if points.length === 1}
-          <!-- Single point - draw a dot -->
-          <circle
-            cx={points[0].x}
-            cy={points[0].y}
-            r={currentAnnotationCanvas.strokeWidth * totalScale / 2}
+        {#if currentAnnotationCanvas.type === 'pen'}
+          {#if points.length === 1}
+            <circle
+              cx={points[0].x}
+              cy={points[0].y}
+              r={currentAnnotationCanvas.strokeWidth * totalScale / 2}
+              fill={currentAnnotationCanvas.color}
+              filter={currentShadowFilter}
+            />
+          {:else}
+            <path
+              d={generateSmoothPath(points)}
+              fill="none"
+              stroke={currentAnnotationCanvas.color}
+              stroke-width={currentAnnotationCanvas.strokeWidth * totalScale}
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              filter={currentShadowFilter}
+            />
+          {/if}
+        {:else if currentAnnotationCanvas.type === 'brush' && points.length >= 1}
+          <path
+            d={generateBrushPath(points, currentAnnotationCanvas.strokeWidth, totalScale)}
             fill={currentAnnotationCanvas.color}
+            stroke="none"
             filter={currentShadowFilter}
           />
-        {:else}
-          <path
-            d={generateSmoothPath(points)}
+        {:else if currentAnnotationCanvas.type === 'arrow' && points.length >= 2}
+          {@const start = points[0]}
+          {@const end = points[1]}
+          {@const angle = Math.atan2(end.y - start.y, end.x - start.x)}
+          {@const scaledStroke = currentAnnotationCanvas.strokeWidth * totalScale}
+          {@const headLength = scaledStroke * 3}
+          {@const headWidth = scaledStroke * 2}
+          {@const lineEndX = end.x - headLength * 0.7 * Math.cos(angle)}
+          {@const lineEndY = end.y - headLength * 0.7 * Math.sin(angle)}
+
+          <g filter={currentShadowFilter}>
+            <line
+              x1={start.x}
+              y1={start.y}
+              x2={lineEndX}
+              y2={lineEndY}
+              stroke={currentAnnotationCanvas.color}
+              stroke-width={scaledStroke}
+              stroke-linecap="round"
+            />
+            <polygon
+              points="{end.x},{end.y} {end.x - headLength * Math.cos(angle) + headWidth * Math.sin(angle)},{end.y - headLength * Math.sin(angle) - headWidth * Math.cos(angle)} {end.x - headLength * Math.cos(angle) - headWidth * Math.sin(angle)},{end.y - headLength * Math.sin(angle) + headWidth * Math.cos(angle)}"
+              fill={currentAnnotationCanvas.color}
+            />
+          </g>
+        {:else if currentAnnotationCanvas.type === 'rectangle' && points.length >= 2}
+          {@const x = Math.min(points[0].x, points[1].x)}
+          {@const y = Math.min(points[0].y, points[1].y)}
+          {@const w = Math.abs(points[1].x - points[0].x)}
+          {@const h = Math.abs(points[1].y - points[0].y)}
+          {@const cornerRadius = currentAnnotationCanvas.strokeWidth * totalScale * 1.5}
+
+          <rect
+            x={x}
+            y={y}
+            width={w}
+            height={h}
+            rx={cornerRadius}
+            ry={cornerRadius}
             fill="none"
             stroke={currentAnnotationCanvas.color}
             stroke-width={currentAnnotationCanvas.strokeWidth * totalScale}
-            stroke-linecap="round"
-            stroke-linejoin="round"
             filter={currentShadowFilter}
           />
         {/if}
-      {:else if currentAnnotationCanvas.type === 'brush' && points.length >= 1}
-        <path
-          d={generateBrushPath(points, currentAnnotationCanvas.strokeWidth, totalScale)}
-          fill={currentAnnotationCanvas.color}
-          stroke="none"
-          filter={currentShadowFilter}
-        />
-      {:else if currentAnnotationCanvas.type === 'arrow' && points.length >= 2}
-        {@const start = points[0]}
-        {@const end = points[1]}
-        {@const angle = Math.atan2(end.y - start.y, end.x - start.x)}
-        {@const scaledStroke = currentAnnotationCanvas.strokeWidth * totalScale}
-        {@const headLength = scaledStroke * 3}
-        {@const headWidth = scaledStroke * 2}
-        {@const lineEndX = end.x - headLength * 0.7 * Math.cos(angle)}
-        {@const lineEndY = end.y - headLength * 0.7 * Math.sin(angle)}
+      {/if}
 
-        <g filter={currentShadowFilter}>
-          <line
-            x1={start.x}
-            y1={start.y}
-            x2={lineEndX}
-            y2={lineEndY}
-            stroke={currentAnnotationCanvas.color}
-            stroke-width={scaledStroke}
-            stroke-linecap="round"
-          />
-          <polygon
-            points="{end.x},{end.y} {end.x - headLength * Math.cos(angle) + headWidth * Math.sin(angle)},{end.y - headLength * Math.sin(angle) - headWidth * Math.cos(angle)} {end.x - headLength * Math.cos(angle) - headWidth * Math.sin(angle)},{end.y - headLength * Math.sin(angle) + headWidth * Math.cos(angle)}"
-            fill={currentAnnotationCanvas.color}
-          />
-        </g>
-      {:else if currentAnnotationCanvas.type === 'rectangle' && points.length >= 2}
-        {@const x = Math.min(points[0].x, points[1].x)}
-        {@const y = Math.min(points[0].y, points[1].y)}
-        {@const w = Math.abs(points[1].x - points[0].x)}
-        {@const h = Math.abs(points[1].y - points[0].y)}
-        {@const cornerRadius = currentAnnotationCanvas.strokeWidth * totalScale * 1.5}
-
+      <!-- Selection box and resize handle for selected text -->
+      {#if selectedTextBounds}
+        {@const padding = 4}
+        {@const handleSize = 10}
         <rect
-          x={x}
-          y={y}
-          width={w}
-          height={h}
-          rx={cornerRadius}
-          ry={cornerRadius}
+          x={selectedTextBounds.x - padding}
+          y={selectedTextBounds.y - padding}
+          width={selectedTextBounds.width + padding * 2}
+          height={selectedTextBounds.height + padding * 2}
           fill="none"
-          stroke={currentAnnotationCanvas.color}
-          stroke-width={currentAnnotationCanvas.strokeWidth * totalScale}
-          filter={currentShadowFilter}
+          stroke="var(--primary-color, #63b97b)"
+          stroke-width="2"
+          stroke-dasharray="4 2"
+        />
+        <rect
+          x={selectedTextBounds.x + selectedTextBounds.width - handleSize / 2 + padding}
+          y={selectedTextBounds.y + selectedTextBounds.height - handleSize / 2 + padding}
+          width={handleSize}
+          height={handleSize}
+          fill="var(--primary-color, #63b97b)"
+          stroke="#fff"
+          stroke-width="1"
+          rx="2"
+          class="resize-handle"
         />
       {/if}
-    {/if}
-
-    <!-- Selection box and resize handle for selected text -->
-    {#if selectedTextBounds}
-      {@const padding = 4}
-      {@const handleSize = 10}
+    </svg>
+  {:else if selectedTextBounds}
+    <!-- Selection box overlay when using Canvas rendering -->
+    {@const padding = 4}
+    {@const handleSize = 10}
+    <svg class="annotation-selection-svg">
       <rect
         x={selectedTextBounds.x - padding}
         y={selectedTextBounds.y - padding}
@@ -1518,7 +1197,6 @@
         stroke-width="2"
         stroke-dasharray="4 2"
       />
-      <!-- Resize handle (bottom-right corner) -->
       <rect
         x={selectedTextBounds.x + selectedTextBounds.width - handleSize / 2 + padding}
         y={selectedTextBounds.y + selectedTextBounds.height - handleSize / 2 + padding}
@@ -1530,8 +1208,8 @@
         rx="2"
         class="resize-handle"
       />
-    {/if}
-  </svg>
+    </svg>
+  {/if}
 
   <!-- Stamp canvas (rendered on top of annotations) -->
   {#if canvas && stampAreas.length > 0}
@@ -1816,7 +1494,6 @@
     width: 100%;
     height: 100%;
     pointer-events: none;
-    display: none;
     z-index: 2;
 
     &.visible {
@@ -1830,10 +1507,16 @@
     height: 100%;
     pointer-events: none;
     z-index: 2;
+  }
 
-    &.hidden {
-      display: none;
-    }
+  .annotation-selection-svg {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 4;
   }
 
   .stamp-preview-canvas {

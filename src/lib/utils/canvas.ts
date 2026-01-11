@@ -1,4 +1,4 @@
-import type { CropArea, TransformState, ExportOptions, Viewport, AdjustmentsState, BlurArea, StampArea, Annotation } from '../types';
+import type { CropArea, TransformState, ExportOptions, Viewport, AdjustmentsState, BlurArea, StampArea, Annotation, AnnotationPoint } from '../types';
 import { applyAllAdjustments, applyGaussianBlur } from './adjustments';
 
 // Image cache for stamp images
@@ -616,13 +616,15 @@ export function applyAnnotations(
   img: HTMLImageElement,
   viewport: Viewport,
   annotations: Annotation[],
-  cropArea?: CropArea | null
+  cropArea?: CropArea | null,
+  currentStroke?: Annotation | null
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
   // Check if there are any eraser strokes - if so, we need to use a separate layer
-  const hasEraserStrokes = annotations.some(a => a.type === 'eraser-stroke');
+  const hasEraserStrokes = annotations.some(a => a.type === 'eraser-stroke') ||
+    (currentStroke?.type === 'eraser-stroke');
 
   const centerX = canvas.width / 2;
   const centerY = canvas.height / 2;
@@ -643,6 +645,9 @@ export function applyAnnotations(
       y: (relativeY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY
     };
   };
+
+  // All annotations to render (committed + current stroke if any)
+  const allAnnotations = currentStroke ? [...annotations, currentStroke] : annotations;
 
   // If there are eraser strokes, render annotations to a separate canvas first
   // This ensures eraser only affects annotations, not the background image
@@ -691,14 +696,14 @@ export function applyAnnotations(
     };
 
     // Step 1: Draw fill annotations first (always at the bottom layer)
-    for (const annotation of annotations) {
+    for (const annotation of allAnnotations) {
       if (annotation.type === 'fill') {
         drawAnnotation(annotationCtx, annotation, toCanvasCoords, totalScale, centerX, centerY, sourceWidth, sourceHeight, offsetX, offsetY);
       }
     }
 
     // Step 2: Draw other annotations and eraser strokes in order
-    for (const annotation of annotations) {
+    for (const annotation of allAnnotations) {
       if (annotation.type === 'fill') {
         continue;
       } else if (annotation.type === 'eraser-stroke') {
@@ -713,14 +718,14 @@ export function applyAnnotations(
   } else {
     // No eraser strokes - draw directly to canvas for better performance
     // Step 1: Draw fill annotations first
-    for (const annotation of annotations) {
+    for (const annotation of allAnnotations) {
       if (annotation.type === 'fill') {
         drawAnnotation(ctx, annotation, toCanvasCoords, totalScale, centerX, centerY, sourceWidth, sourceHeight, offsetX, offsetY);
       }
     }
 
     // Step 2: Draw other annotations
-    for (const annotation of annotations) {
+    for (const annotation of allAnnotations) {
       if (annotation.type === 'fill') {
         continue;
       } else {
