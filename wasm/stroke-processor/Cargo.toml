@@ -1,0 +1,32 @@
+[package]
+name = "stroke-processor"
+version = "0.1.0"
+edition = "2021"
+authors = ["Tokimeki Image Editor"]
+description = "High-performance stroke tessellation for annotation rendering"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["console_error_panic_hook"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+# Lyon for path tessellation
+lyon = "1.0"
+lyon_tessellation = "1.0"
+lyon_path = "1.0"
+
+# For better panic messages in debug builds
+console_error_panic_hook = { version = "0.1", optional = true }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+# Optimize for small code size
+opt-level = "s"
+lto = true

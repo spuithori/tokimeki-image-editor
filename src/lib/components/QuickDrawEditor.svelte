@@ -29,6 +29,7 @@
   import { DEFAULT_COLOR_PRESETS, DEFAULT_STROKE_WIDTH } from '../utils/colors';
   import Canvas from './Canvas.svelte';
   import { Pencil, Brush, PaintBucket } from 'lucide-svelte';
+  import { initWasm } from '../wasm/stroke-processor';
 
   interface Props {
     width?: number;
@@ -259,6 +260,13 @@
   }
 
   onMount(async () => {
+    // Initialize WASM for high-performance stroke processing
+    initWasm().then((success) => {
+      if (success) {
+        console.log('WASM stroke processor enabled');
+      }
+    });
+
     try {
       const result = await loadBackgroundImage();
       state = applyQuickDrawImage(state, result.image, result.fitScale);

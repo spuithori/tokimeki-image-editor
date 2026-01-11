@@ -24,8 +24,11 @@
   "dependencies": {
     "@sveltejs/adapter-auto": "^7.0.0",
     "lucide-svelte": "^0.548.0",
+    "rbush": "^4.0.1",
     "runed": "^0.35.1",
-    "svelte-i18n": "^4.0.1"
+    "svelte-i18n": "^4.0.1",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.5.0"
   },
   "devDependencies": {
     "@sveltejs/kit": "^2.47.3",

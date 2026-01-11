@@ -1,9 +1,15 @@
 /**
  * Core drawing logic for pen and brush tools.
  * Shared between AnnotationTool and QuickDrawEditor.
+ *
+ * Performance optimizations:
+ * - WASM path simplification (when available)
+ * - LOD-based point reduction at low zoom levels
  */
 
 import type { Annotation, AnnotationPoint, Viewport, CropArea } from '../types';
+import { simplifyPath } from '../wasm/stroke-processor';
+import { getLODLevel } from './lod';
 
 // ============================================
 // Types
@@ -424,6 +430,22 @@ export function generateSmoothPath(points: { x: number; y: number }[]): string {
 }
 
 /**
+ * Generate smooth SVG path with LOD optimization
+ * Always uses WASM simplifyPath - tolerance controls simplification level
+ */
+export function generateSmoothPathWithLOD(
+  points: { x: number; y: number }[],
+  zoom: number = 1
+): string {
+  if (points.length === 0) return '';
+
+  const lod = getLODLevel(zoom);
+  const optimizedPoints = simplifyPath(points as AnnotationPoint[], lod.simplifyTolerance);
+
+  return generateSmoothPath(optimizedPoints);
+}
+
+/**
  * Smooth a series of points using moving average
  */
 export function smoothPoints(
@@ -651,6 +673,24 @@ export function generateBrushPath(
 
   path += ' Z';
   return path;
+}
+
+/**
+ * Generate brush path with LOD optimization
+ * Always uses WASM simplifyPath - tolerance controls simplification level
+ */
+export function generateBrushPathWithLOD(
+  points: { x: number; y: number; width?: number }[],
+  baseWidth: number,
+  scale: number,
+  zoom: number = 1
+): string {
+  if (points.length === 0) return '';
+
+  const lod = getLODLevel(zoom);
+  const optimizedPoints = simplifyPath(points as AnnotationPoint[], lod.simplifyTolerance);
+
+  return generateBrushPath(optimizedPoints, baseWidth, scale);
 }
 
 // ============================================

@@ -1,0 +1,1 @@
+/home/holy0201/spcoding/tokimeki-image-editor/wasm/stroke-processor/target/wasm32-unknown-unknown/release/stroke_processor.wasm: /home/holy0201/spcoding/tokimeki-image-editor/wasm/stroke-processor/src/lib.rs

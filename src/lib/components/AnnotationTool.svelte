@@ -2,12 +2,20 @@
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
   import type { Annotation, AnnotationType, AnnotationPoint, Viewport, TransformState, CropArea, StampArea } from '../types';
-  import { screenToImageCoords, getOrCreateFillCanvas, applyStamps, applyAnnotations } from '../utils/canvas';
+  import { screenToImageCoords, getOrCreateFillCanvas, applyStamps } from '../utils/canvas';
+  import {
+    createAnnotationCacheState,
+    updateAnnotationCache,
+    renderAnnotationsWithCache,
+    clearLodCache,
+    type AnnotationCacheState
+  } from '../utils/annotation-cache';
   import {
     initAnnotationWebGPU,
     cancelPendingRenders,
     clearAnnotationTextureCache
   } from '../utils/webgpu-annotation';
+  import { initWasm } from '../wasm/stroke-processor';
   import {
     getEventCoords,
     createPenAnnotation,
@@ -21,9 +29,11 @@
     getCompositeImageData,
     getAnnotationOnlyImageData,
     generateSmoothPath,
+    generateSmoothPathWithLOD,
     smoothPoints,
     interpolateBrushPoints,
     generateBrushPath,
+    generateBrushPathWithLOD,
     MIN_POINT_DISTANCE,
     type BrushState
   } from '../utils/drawing';
@@ -212,6 +222,15 @@
       useWebGPUAnnotations = success;
       if (success) {
         console.log('WebGPU annotation rendering enabled');
+      }
+    });
+
+    // Initialize WASM for high-performance stroke processing
+    initWasm().then((success) => {
+      if (success) {
+        console.log('WASM stroke processor enabled');
+      } else {
+        console.log('Using JavaScript fallback for stroke processing');
       }
     });
 
@@ -868,15 +887,27 @@
     (currentAnnotation?.type === 'eraser-stroke')
   );
 
-  // Use Canvas rendering when fill or eraser strokes exist
-  let useCanvasRendering = $derived(hasFillAnnotations || hasEraserStrokes);
+  // Always use Canvas rendering for performance (caching prevents re-rendering)
+  let useCanvasRendering = true;
 
   // Annotation canvas reference (used when fill or eraser strokes exist)
   let annotationCanvasElement = $state<HTMLCanvasElement | null>(null);
 
+  // Annotation cache state for high-performance rendering
+  let annotationCacheState = $state<AnnotationCacheState>(createAnnotationCacheState());
+  let prevAnnotationCount = $state(0);
+
+  // Clear LOD cache when annotations are deleted (not just added)
+  $effect(() => {
+    if (annotations.length < prevAnnotationCount) {
+      clearLodCache();
+    }
+    prevAnnotationCount = annotations.length;
+  });
+
   // ANNOTATION RENDERING
-  // SVG is used for most annotations (sharp vector rendering)
-  // Canvas is only used when fill or eraser strokes exist (require special compositing)
+  // Uses cached rendering for high performance with many annotations
+  // Cache is updated only when annotations/zoom change, not during panning
   $effect(() => {
     if (!annotationCanvasElement || !canvas || !image) return;
 
@@ -889,23 +920,29 @@
       annotationCanvasElement.height = height;
     }
 
-    const ctx = annotationCanvasElement.getContext('2d');
-    if (!ctx) return;
-
-    // Clear canvas
-    ctx.clearRect(0, 0, width, height);
-
-    // Only render to canvas when fill or eraser strokes exist
+    // Only render to canvas when useCanvasRendering is true
     if (!useCanvasRendering) return;
 
-    // Render annotations using canvas-coordinate rendering
-    applyAnnotations(
-      annotationCanvasElement,
+    // Update cache (only rebuilds when zoom/annotations change, not during pan)
+    annotationCacheState = updateAnnotationCache(
+      annotationCacheState,
+      annotations,
+      width,
+      height,
       image,
       viewport,
-      annotations,
-      cropArea,
-      currentAnnotation
+      cropArea
+    );
+
+    // Render cached annotations + current stroke to canvas
+    // Pan offset is applied via translation, avoiding cache rebuild
+    renderAnnotationsWithCache(
+      annotationCanvasElement,
+      annotationCacheState,
+      currentAnnotation,
+      image,
+      viewport,
+      cropArea
     );
   });
 
@@ -994,8 +1031,9 @@
               filter={shadowFilter}
             />
           {:else}
+            <!-- Use LOD-enabled path for performance at low zoom levels -->
             <path
-              d={generateSmoothPath(points)}
+              d={generateSmoothPathWithLOD(points, viewport.zoom)}
               fill="none"
               stroke={annotation.color}
               stroke-width={annotation.strokeWidth * totalScale}
@@ -1010,8 +1048,9 @@
             if (!canvasCoords) return null;
             return { ...canvasCoords, width: p.width };
           }).filter(Boolean) as { x: number; y: number; width?: number }[]}
+          <!-- Use LOD-enabled brush path for performance at low zoom levels -->
           <path
-            d={generateBrushPath(brushPoints, annotation.strokeWidth, totalScale)}
+            d={generateBrushPathWithLOD(brushPoints, annotation.strokeWidth, totalScale, viewport.zoom)}
             fill={annotation.color}
             stroke="none"
             filter={shadowFilter}

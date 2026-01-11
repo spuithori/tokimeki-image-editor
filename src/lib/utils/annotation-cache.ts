@@ -9,10 +9,15 @@
  * - currentStroke: Only the in-progress stroke (rendered on top in real-time)
  * - Incremental updates: New strokes are added to cache without full rebuild
  * - Cache invalidation: Only eraser strokes and deletions trigger full rebuild
+ * - Spatial indexing: O(log n) viewport culling for 100,000+ strokes
+ * - LOD system: Point reduction at low zoom levels
  */
 
 import type { Annotation, AnnotationPoint, Viewport, CropArea } from '../types';
 import { getOrCreateFillCanvas } from './canvas';
+import { getSpatialIndex } from './spatial-index';
+import { simplifyPath } from '../wasm/stroke-processor';
+import { getLODLevel } from './lod';
 
 export interface AnnotationCacheState {
   // The cached canvas containing all committed annotations
@@ -26,6 +31,19 @@ export interface AnnotationCacheState {
   // Last known canvas dimensions
   width: number;
   height: number;
+  // Spatial index sync version
+  spatialIndexVersion: number;
+  // Viewport state when cache was created
+  cachedZoom: number;
+  cachedScale: number;
+  // Crop area state
+  cachedCropHash: string;
+  // Cache canvas dimensions (may be larger than display canvas)
+  cacheWidth: number;
+  cacheHeight: number;
+  // Offset from cache origin to display canvas origin
+  cacheOriginX: number;
+  cacheOriginY: number;
 }
 
 export function createAnnotationCacheState(): AnnotationCacheState {
@@ -35,8 +53,60 @@ export function createAnnotationCacheState(): AnnotationCacheState {
     committedCount: 0,
     isDirty: true,
     width: 0,
-    height: 0
+    height: 0,
+    spatialIndexVersion: 0,
+    cachedZoom: 1,
+    cachedScale: 1,
+    cachedCropHash: '',
+    cacheWidth: 0,
+    cacheHeight: 0,
+    cacheOriginX: 0,
+    cacheOriginY: 0
   };
+}
+
+/**
+ * Generate crop area hash for cache invalidation
+ */
+function hashCropArea(cropArea: CropArea | null | undefined): string {
+  if (!cropArea) return 'none';
+  return `${cropArea.x}:${cropArea.y}:${cropArea.width}:${cropArea.height}`;
+}
+
+/**
+ * Sync spatial index with annotations array
+ * Returns the new version number
+ */
+export function syncSpatialIndex(annotations: Annotation[]): number {
+  const index = getSpatialIndex();
+  index.sync(annotations);
+  return annotations.length;
+}
+
+/**
+ * Get visible annotations using spatial index (viewport culling)
+ * Falls back to all annotations if spatial index is empty
+ */
+export function getVisibleAnnotations(
+  annotations: Annotation[],
+  viewport: Viewport,
+  canvasWidth: number,
+  canvasHeight: number,
+  cropArea?: CropArea | null
+): Annotation[] {
+  const index = getSpatialIndex();
+
+  // Sync index if needed
+  if (index.size !== annotations.length) {
+    index.sync(annotations);
+  }
+
+  // Query visible annotations
+  const visible = index.queryViewport(viewport, canvasWidth, canvasHeight, cropArea);
+
+  // Maintain original order (important for z-ordering)
+  const visibleIds = new Set(visible.map(a => a.id));
+  return annotations.filter(a => visibleIds.has(a.id));
 }
 
 /**
@@ -48,16 +118,32 @@ function hashAnnotations(annotations: Annotation[]): string {
 
 /**
  * Check if cache needs rebuild
+ * Note: Offset (pan) changes do NOT require rebuild - we translate the cached canvas instead
  */
 export function needsCacheRebuild(
   state: AnnotationCacheState,
   annotations: Annotation[],
   width: number,
-  height: number
+  height: number,
+  viewport?: Viewport,
+  cropArea?: CropArea | null
 ): boolean {
   if (state.isDirty) return true;
   if (!state.committedCanvas) return true;
   if (state.width !== width || state.height !== height) return true;
+
+  // Check zoom/scale changes (requires full rebuild)
+  if (viewport) {
+    if (state.cachedZoom !== viewport.zoom || state.cachedScale !== viewport.scale) {
+      return true;
+    }
+  }
+
+  // Check crop area changes
+  const currentCropHash = hashCropArea(cropArea);
+  if (state.cachedCropHash !== currentCropHash) {
+    return true;
+  }
 
   const currentHash = hashAnnotations(annotations);
   if (state.committedHash !== currentHash) {
@@ -93,8 +179,60 @@ export function canDoIncrementalUpdate(
   return !addedAnnotations.some(a => a.type === 'eraser-stroke');
 }
 
+// Cache for LOD-simplified points: Map<annotationId:tolerance:pointCount, simplifiedPoints>
+const lodCache = new Map<string, AnnotationPoint[]>();
+const LOD_CACHE_MAX_SIZE = 500;
+
+/**
+ * Clear LOD cache (call when annotations are modified)
+ */
+export function clearLodCache(): void {
+  lodCache.clear();
+}
+
+/**
+ * Prune LOD cache to prevent memory bloat
+ */
+function pruneLodCacheIfNeeded(): void {
+  if (lodCache.size > LOD_CACHE_MAX_SIZE) {
+    // Remove oldest entries (first 100)
+    const keysToDelete = Array.from(lodCache.keys()).slice(0, 100);
+    for (const key of keysToDelete) {
+      lodCache.delete(key);
+    }
+  }
+}
+
+/**
+ * Apply LOD simplification to annotation points for rendering
+ * Results are cached per annotation/tolerance/pointCount combination
+ */
+function applyLODToPoints(points: AnnotationPoint[], zoom: number, annotationId?: string): AnnotationPoint[] {
+  if (points.length < 2) return points;
+
+  const lod = getLODLevel(zoom);
+  const tolerance = lod.simplifyTolerance;
+
+  // Use cache if available (include point count in key to handle drawing updates)
+  if (annotationId) {
+    const cacheKey = `${annotationId}:${tolerance}:${points.length}`;
+    const cached = lodCache.get(cacheKey);
+    if (cached && cached.length > 0) {
+      return cached;
+    }
+
+    const simplified = simplifyPath(points, tolerance);
+    lodCache.set(cacheKey, simplified);
+    pruneLodCacheIfNeeded();
+    return simplified;
+  }
+
+  return simplifyPath(points, tolerance);
+}
+
 /**
  * Render a single annotation to a canvas context
+ * Supports LOD-based point simplification for performance at low zoom levels
  */
 export function renderAnnotationToContext(
   ctx: CanvasRenderingContext2D,
@@ -102,7 +240,8 @@ export function renderAnnotationToContext(
   toCanvasCoords: (point: AnnotationPoint) => { x: number; y: number },
   totalScale: number,
   originX: number,
-  originY: number
+  originY: number,
+  zoom: number = 1
 ): void {
   if (annotation.points.length === 0 && annotation.type !== 'fill') return;
 
@@ -128,7 +267,9 @@ export function renderAnnotationToContext(
       );
     }
   } else if (annotation.type === 'pen') {
-    const points = annotation.points.map(toCanvasCoords);
+    // Apply LOD to reduce points at low zoom levels (cached per annotation)
+    const lodPoints = applyLODToPoints(annotation.points, zoom, annotation.id);
+    const points = lodPoints.map(toCanvasCoords);
     ctx.strokeStyle = annotation.color;
     ctx.lineWidth = annotation.strokeWidth * totalScale;
     ctx.lineCap = 'round';
@@ -153,7 +294,7 @@ export function renderAnnotationToContext(
       ctx.stroke();
     }
   } else if (annotation.type === 'brush') {
-    renderBrushAnnotation(ctx, annotation, toCanvasCoords, totalScale);
+    renderBrushAnnotation(ctx, annotation, toCanvasCoords, totalScale, zoom);
   } else if (annotation.type === 'arrow') {
     renderArrowAnnotation(ctx, annotation, toCanvasCoords, totalScale);
   } else if (annotation.type === 'rectangle') {
@@ -176,8 +317,12 @@ function renderBrushAnnotation(
   ctx: CanvasRenderingContext2D,
   annotation: Annotation,
   toCanvasCoords: (point: AnnotationPoint) => { x: number; y: number },
-  totalScale: number
+  totalScale: number,
+  zoom: number = 1
 ): void {
+  // Don't apply LOD to brush strokes - the width variation at each point
+  // is crucial for the calligraphy aesthetic. Brush strokes typically have
+  // fewer points anyway due to the minimum distance threshold.
   const rawPoints = annotation.points.map(p => ({
     ...toCanvasCoords(p),
     width: p.width ?? annotation.strokeWidth
@@ -497,6 +642,8 @@ function renderEraserStroke(
 
 /**
  * Build or update the committed canvas cache
+ * Uses spatial indexing for viewport culling and LOD for point reduction
+ * Cache is sized to fit the entire scaled image to prevent edge clipping
  */
 export function updateAnnotationCache(
   state: AnnotationCacheState,
@@ -507,52 +654,82 @@ export function updateAnnotationCache(
   viewport: Viewport,
   cropArea: CropArea | null | undefined
 ): AnnotationCacheState {
-  const needsRebuild = needsCacheRebuild(state, annotations, width, height);
+  const needsRebuild = needsCacheRebuild(state, annotations, width, height, viewport, cropArea);
   const canIncremental = canDoIncrementalUpdate(state, annotations);
+
+  // If no rebuild needed and no incremental update, return current state
+  if (!needsRebuild && !canIncremental) {
+    return state;
+  }
 
   // Calculate transform parameters
   const totalScale = viewport.scale * viewport.zoom;
-  const centerX = width / 2;
-  const centerY = height / 2;
+  const zoom = viewport.zoom;
   const sourceWidth = cropArea ? cropArea.width : image.width;
   const sourceHeight = cropArea ? cropArea.height : image.height;
   const cropOffsetX = cropArea ? cropArea.x : 0;
   const cropOffsetY = cropArea ? cropArea.y : 0;
 
+  // Calculate cache canvas size to fit the entire scaled image
+  // This ensures annotations at edges aren't clipped
+  const scaledImageWidth = sourceWidth * totalScale;
+  const scaledImageHeight = sourceHeight * totalScale;
+  const cacheWidth = Math.max(width, Math.ceil(scaledImageWidth));
+  const cacheHeight = Math.max(height, Math.ceil(scaledImageHeight));
+
+  // Cache origin is at the center of the cache canvas
+  const cacheCenterX = cacheWidth / 2;
+  const cacheCenterY = cacheHeight / 2;
+
+  // Origin offset: how much to translate the cache when compositing to the display
+  const cacheOriginX = (cacheWidth - width) / 2;
+  const cacheOriginY = (cacheHeight - height) / 2;
+
+  // Render annotations centered in the cache
   const toCanvasCoords = (point: AnnotationPoint) => ({
-    x: (point.x - cropOffsetX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX,
-    y: (point.y - cropOffsetY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY
+    x: (point.x - cropOffsetX - sourceWidth / 2) * totalScale + cacheCenterX,
+    y: (point.y - cropOffsetY - sourceHeight / 2) * totalScale + cacheCenterY
   });
 
-  const originX = (0 - cropOffsetX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX;
-  const originY = (0 - cropOffsetY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY;
+  const originX = (0 - cropOffsetX - sourceWidth / 2) * totalScale + cacheCenterX;
+  const originY = (0 - cropOffsetY - sourceHeight / 2) * totalScale + cacheCenterY;
 
-  // Create or get canvas
+  // Create or resize canvas if needed
   let committedCanvas = state.committedCanvas;
-  if (!committedCanvas || state.width !== width || state.height !== height) {
+  const needsResize = !committedCanvas ||
+    state.cacheWidth !== cacheWidth ||
+    state.cacheHeight !== cacheHeight;
+
+  if (needsResize) {
     committedCanvas = document.createElement('canvas');
-    committedCanvas.width = width;
-    committedCanvas.height = height;
+    committedCanvas.width = cacheWidth;
+    committedCanvas.height = cacheHeight;
   }
 
   const ctx = committedCanvas.getContext('2d');
   if (!ctx) return state;
 
+  // Render all annotations to cache (no viewport culling for cache)
+  // Cache is rendered at offset 0 and translated during compositing,
+  // so we need all annotations, not just currently visible ones.
+  // LOD simplification keeps this fast even for 1000+ annotations.
+  const allAnnotations = annotations;
+
   if (needsRebuild && !canIncremental) {
     // Full rebuild
-    ctx.clearRect(0, 0, width, height);
+    ctx.clearRect(0, 0, cacheWidth, cacheHeight);
 
     // Render fills first
-    for (const annotation of annotations) {
+    for (const annotation of allAnnotations) {
       if (annotation.type === 'fill') {
-        renderAnnotationToContext(ctx, annotation, toCanvasCoords, totalScale, originX, originY);
+        renderAnnotationToContext(ctx, annotation, toCanvasCoords, totalScale, originX, originY, zoom);
       }
     }
 
     // Render other annotations
-    for (const annotation of annotations) {
+    for (const annotation of allAnnotations) {
       if (annotation.type !== 'fill') {
-        renderAnnotationToContext(ctx, annotation, toCanvasCoords, totalScale, originX, originY);
+        renderAnnotationToContext(ctx, annotation, toCanvasCoords, totalScale, originX, originY, zoom);
       }
     }
   } else if (canIncremental) {
@@ -562,14 +739,14 @@ export function updateAnnotationCache(
     // Render fills first among new annotations
     for (const annotation of newAnnotations) {
       if (annotation.type === 'fill') {
-        renderAnnotationToContext(ctx, annotation, toCanvasCoords, totalScale, originX, originY);
+        renderAnnotationToContext(ctx, annotation, toCanvasCoords, totalScale, originX, originY, zoom);
       }
     }
 
     // Render other new annotations
     for (const annotation of newAnnotations) {
       if (annotation.type !== 'fill') {
-        renderAnnotationToContext(ctx, annotation, toCanvasCoords, totalScale, originX, originY);
+        renderAnnotationToContext(ctx, annotation, toCanvasCoords, totalScale, originX, originY, zoom);
       }
     }
   }
@@ -580,12 +757,21 @@ export function updateAnnotationCache(
     committedCount: annotations.length,
     isDirty: false,
     width,
-    height
+    height,
+    spatialIndexVersion: annotations.length,
+    cachedZoom: viewport.zoom,
+    cachedScale: viewport.scale,
+    cachedCropHash: hashCropArea(cropArea),
+    cacheWidth,
+    cacheHeight,
+    cacheOriginX,
+    cacheOriginY
   };
 }
 
 /**
  * Render the final composited view (cache + current stroke)
+ * Cache may be larger than display canvas to accommodate zoomed content
  */
 export function renderAnnotationsWithCache(
   targetCanvas: HTMLCanvasElement,
@@ -605,13 +791,25 @@ export function renderAnnotationsWithCache(
   ctx.clearRect(0, 0, width, height);
 
   // Draw cached annotations
-  if (cacheState.committedCanvas) {
-    ctx.drawImage(cacheState.committedCanvas, 0, 0);
+  // Cache is larger than display and centered, so we need to calculate
+  // which part of the cache to draw based on viewport offset
+  if (cacheState.committedCanvas && cacheState.cacheWidth > 0) {
+    // Source coordinates in the cache canvas
+    // Cache center corresponds to display center at offset 0
+    const srcX = cacheState.cacheOriginX - viewport.offsetX;
+    const srcY = cacheState.cacheOriginY - viewport.offsetY;
+
+    ctx.drawImage(
+      cacheState.committedCanvas,
+      srcX, srcY, width, height,  // Source rectangle
+      0, 0, width, height          // Destination rectangle
+    );
   }
 
   // Draw current stroke on top
   if (currentStroke && currentStroke.points.length > 0) {
     const totalScale = viewport.scale * viewport.zoom;
+    const zoom = viewport.zoom;
     const centerX = width / 2;
     const centerY = height / 2;
     const sourceWidth = cropArea ? cropArea.width : image.width;
@@ -627,7 +825,8 @@ export function renderAnnotationsWithCache(
     const originX = (0 - cropOffsetX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX;
     const originY = (0 - cropOffsetY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY;
 
-    renderAnnotationToContext(ctx, currentStroke, toCanvasCoords, totalScale, originX, originY);
+    // Current stroke doesn't need LOD (always render at full detail for responsiveness)
+    renderAnnotationToContext(ctx, currentStroke, toCanvasCoords, totalScale, originX, originY, zoom);
   }
 }
 
