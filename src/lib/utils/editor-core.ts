@@ -788,9 +788,9 @@ export function handleQuickDrawTouchMove(
     if (result.zoomInfo && canvasRect) {
       newState = {
         ...newState,
-        viewport: handleWheelZoom(
-          { deltaY: -result.zoomInfo.delta * 1000, clientX: result.zoomInfo.centerX, clientY: result.zoomInfo.centerY, preventDefault: () => {} } as WheelEvent,
-          newState.viewport, canvasWidth, canvasHeight, canvasRect
+        viewport: calculateZoomViewport(
+          newState.viewport, result.zoomInfo.delta, canvasWidth, canvasHeight,
+          result.zoomInfo.centerX, result.zoomInfo.centerY, canvasRect
         )
       };
     }
@@ -859,9 +859,8 @@ export function handleQuickDrawZoom(
 ): QuickDrawState {
   return {
     ...state,
-    viewport: handleWheelZoom(
-      { deltaY: -delta * 1000, clientX: centerX ?? 0, clientY: centerY ?? 0, preventDefault: () => {} } as WheelEvent,
-      state.viewport, canvasWidth, canvasHeight, canvasRect
+    viewport: calculateZoomViewport(
+      state.viewport, delta, canvasWidth, canvasHeight, centerX, centerY, canvasRect
     )
   };
 }

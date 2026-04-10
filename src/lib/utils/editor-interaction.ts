@@ -89,8 +89,12 @@ export function calculatePanOffset(
   const scaledWidth = imgWidth * totalScale;
   const scaledHeight = imgHeight * totalScale;
 
-  const maxOffsetX = (scaledWidth / 2) - (canvasWidth / 2) + (canvasWidth * PAN_OVERFLOW_MARGIN);
-  const maxOffsetY = (scaledHeight / 2) - (canvasHeight / 2) + (canvasHeight * PAN_OVERFLOW_MARGIN);
+  const baseX = Math.max(0, (scaledWidth / 2) - (canvasWidth / 2));
+  const baseY = Math.max(0, (scaledHeight / 2) - (canvasHeight / 2));
+  const minPanX = canvasWidth * 0.3;
+  const minPanY = canvasHeight * 0.3;
+  const maxOffsetX = Math.max(minPanX, baseX + canvasWidth * PAN_OVERFLOW_MARGIN);
+  const maxOffsetY = Math.max(minPanY, baseY + canvasHeight * PAN_OVERFLOW_MARGIN);
 
   const newOffsetX = viewport.offsetX + deltaX;
   const newOffsetY = viewport.offsetY + deltaY;
@@ -102,7 +106,9 @@ export function calculatePanOffset(
 }
 
 /**
- * Calculate zoom viewport - THE core zoom calculation used everywhere
+ * Calculate zoom viewport - THE core zoom calculation used everywhere.
+ * delta is an exponential factor: newZoom = oldZoom * exp(delta).
+ * This gives uniform zoom speed regardless of current zoom level.
  */
 export function calculateZoomViewport(
   viewport: Viewport,
@@ -114,14 +120,16 @@ export function calculateZoomViewport(
   canvasRect?: DOMRect
 ): Viewport {
   const oldZoom = viewport.zoom;
-  const newZoom = Math.max(0.1, Math.min(5, oldZoom + delta));
+  const newZoom = Math.max(0.1, Math.min(10, oldZoom * Math.exp(delta)));
 
   let newOffsetX = viewport.offsetX;
   let newOffsetY = viewport.offsetY;
 
   if (centerX !== undefined && centerY !== undefined && canvasRect) {
-    const x = centerX - canvasRect.left - canvasWidth / 2;
-    const y = centerY - canvasRect.top - canvasHeight / 2;
+    // Use actual DOM dimensions and compensate for CSS scaling
+    const cssScale = canvasRect.width / canvasWidth;
+    const x = (centerX - canvasRect.left - canvasRect.width / 2) / cssScale;
+    const y = (centerY - canvasRect.top - canvasRect.height / 2) / cssScale;
 
     const zoomRatio = newZoom / oldZoom;
     newOffsetX = x - (x - viewport.offsetX) * zoomRatio;
@@ -286,8 +294,8 @@ export function handlePureTouchMove(
       };
     } else {
       const scale = distance / state.initialPinchDistance;
-      const newZoom = Math.max(0.1, Math.min(5, state.initialPinchZoom * scale));
-      const delta = newZoom - ctx.viewport.zoom;
+      const newZoom = Math.max(0.1, Math.min(10, state.initialPinchZoom * scale));
+      const delta = Math.log(newZoom / ctx.viewport.zoom);
 
       return {
         state,
@@ -693,8 +701,8 @@ export function handleOverlayTouchMove(
       };
     } else {
       const scale = distance / state.initialPinchDistance;
-      const newZoom = Math.max(0.1, Math.min(5, state.initialPinchZoom * scale));
-      const delta = newZoom - ctx.viewport.zoom;
+      const newZoom = Math.max(0.1, Math.min(10, state.initialPinchZoom * scale));
+      const delta = Math.log(newZoom / ctx.viewport.zoom);
 
       return {
         state,
@@ -851,7 +859,7 @@ export function handleWheelZoom(
   canvasHeight: number,
   canvasRect: DOMRect
 ): Viewport {
-  const delta = -event.deltaY * 0.001;
+  const delta = -event.deltaY * 0.003;
   return calculateZoomViewport(
     viewport,
     delta,

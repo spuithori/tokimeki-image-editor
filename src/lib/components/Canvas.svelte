@@ -260,7 +260,7 @@
       ) {
         e.preventDefault();
         const targetZoom = viewport.zoom > 1.05 ? 1 : DOUBLE_TAP_ZOOM_TARGET;
-        const delta = targetZoom - viewport.zoom;
+        const delta = Math.log(targetZoom / viewport.zoom);
         if (onZoom) onZoom(delta, t.clientX, t.clientY);
         haptic('medium');
         lastTapTime = 0;
@@ -278,7 +278,7 @@
     if (!onZoom || !canvasElement) return;
     e.preventDefault();
     const targetZoom = viewport.zoom > 1.05 ? 1 : DOUBLE_TAP_ZOOM_TARGET;
-    const delta = targetZoom - viewport.zoom;
+    const delta = Math.log(targetZoom / viewport.zoom);
     onZoom(delta, e.clientX, e.clientY);
   }
 

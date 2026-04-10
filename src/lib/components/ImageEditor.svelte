@@ -2,7 +2,7 @@
   import '$lib/i18n';
   import '../styles/tokens.css';
   import { _ } from 'svelte-i18n';
-  import { Redo2, Undo2, RotateCcw, ImagePlus, Check, Sparkles, Download } from 'lucide-svelte';
+  import { Redo2, Undo2, RotateCcw, ImagePlus, Check, Sparkles, Download, LoaderCircle } from 'lucide-svelte';
   import type {
     EditorMode,
     EditorState,
@@ -110,6 +110,7 @@
   let stageWidth = $state<number | undefined>(undefined);
   let stageHeight = $state<number | undefined>(undefined);
   let isHovering = $state(false);
+  let isApplying = $state(false);
 
   // Load initial image when provided
   $effect(() => {
@@ -260,10 +261,15 @@
   }
 
   async function handleComplete() {
-    if (!onComplete) return;
+    if (!onComplete || isApplying) return;
+    isApplying = true;
     haptic('success');
-    const result = await exportImage(state);
-    if (result) onComplete(result.dataUrl, { blob: result.blob, width: result.width, height: result.height });
+    try {
+      const result = await exportImage(state);
+      if (result) onComplete(result.dataUrl, { blob: result.blob, width: result.width, height: result.height });
+    } finally {
+      isApplying = false;
+    }
   }
 
   function handleCancel() {
@@ -368,10 +374,14 @@
     </div>
 
     <div class="topbar-right">
-      {#if hasImage}
+      {#if hasImage && state.mode !== 'crop'}
         {#if !isStandalone}
-          <button type="button" class="primary-link" onclick={handleComplete}>
-            <Check size={16} strokeWidth={2.6} />
+          <button type="button" class="primary-link" onclick={handleComplete} disabled={isApplying}>
+            {#if isApplying}
+              <LoaderCircle size={16} class="spin" />
+            {:else}
+              <Check size={16} strokeWidth={2.6} />
+            {/if}
             <span>{$_('editor.apply')}</span>
           </button>
         {:else}
@@ -434,7 +444,7 @@
         class="canvas-stage"
         onwheel={(e) => {
           e.preventDefault();
-          handleZoom(-e.deltaY * 0.001, e.clientX, e.clientY);
+          handleZoom(-e.deltaY * 0.003, e.clientX, e.clientY);
         }}
       >
         <Canvas
@@ -686,6 +696,17 @@
   }
   .primary-link:active {
     transform: translateY(0);
+  }
+  .primary-link:disabled {
+    opacity: 0.6;
+    pointer-events: none;
+  }
+  .primary-link :global(.spin) {
+    animation: spin 1s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
 
   /* ──────────────────────────────────────────────

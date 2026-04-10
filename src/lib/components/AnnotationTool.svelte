@@ -873,8 +873,8 @@
         interactionState = { ...interactionState, initialPinchDistance: distance, initialPinchZoom: viewport.zoom };
       } else {
         const scale = distance / interactionState.initialPinchDistance;
-        const newZoom = Math.max(0.1, Math.min(5, interactionState.initialPinchZoom * scale));
-        const delta = newZoom - viewport.zoom;
+        const newZoom = Math.max(0.1, Math.min(10, interactionState.initialPinchZoom * scale));
+        const delta = Math.log(newZoom / viewport.zoom);
         const centerX = (touch1.clientX + touch2.clientX) / 2;
         const centerY = (touch1.clientY + touch2.clientY) / 2;
         const canvasRect = canvas.getBoundingClientRect();
