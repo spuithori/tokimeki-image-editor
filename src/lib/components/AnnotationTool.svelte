@@ -868,19 +868,35 @@
       const touch1 = event.touches[0];
       const touch2 = event.touches[1];
       const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+      const centerX = (touch1.clientX + touch2.clientX) / 2;
+      const centerY = (touch1.clientY + touch2.clientY) / 2;
 
       if (interactionState.initialPinchDistance === 0) {
-        interactionState = { ...interactionState, initialPinchDistance: distance, initialPinchZoom: viewport.zoom };
+        interactionState = { ...interactionState, initialPinchDistance: distance, initialPinchZoom: viewport.zoom, lastPinchCenter: { x: centerX, y: centerY } };
       } else {
         const scale = distance / interactionState.initialPinchDistance;
         const newZoom = Math.max(0.1, Math.min(10, interactionState.initialPinchZoom * scale));
         const delta = Math.log(newZoom / viewport.zoom);
-        const centerX = (touch1.clientX + touch2.clientX) / 2;
-        const centerY = (touch1.clientY + touch2.clientY) / 2;
+        const panDeltaX = centerX - interactionState.lastPinchCenter.x;
+        const panDeltaY = centerY - interactionState.lastPinchCenter.y;
+        // Compute zoom-at-point then add pan offset
         const canvasRect = canvas.getBoundingClientRect();
-        const newViewport = calculateZoomViewport(viewport, delta, canvas.width, canvas.height, centerX, centerY, canvasRect);
-        onViewportChange({ zoom: newViewport.zoom, offsetX: newViewport.offsetX, offsetY: newViewport.offsetY });
+        const zoomedViewport = calculateZoomViewport(viewport, delta, canvas.width, canvas.height, centerX, centerY, canvasRect);
+        onViewportChange({ zoom: zoomedViewport.zoom, offsetX: zoomedViewport.offsetX + panDeltaX, offsetY: zoomedViewport.offsetY + panDeltaY });
+        interactionState = { ...interactionState, lastPinchCenter: { x: centerX, y: centerY } };
       }
+      return;
+    }
+
+    // Single finger after two-finger gesture: pan instead of draw
+    if (event.touches.length === 1 && interactionState.isTwoFingerTouch && interactionState.isPanning && onViewportChange && canvas && image) {
+      event.preventDefault();
+      const touch = event.touches[0];
+      const deltaX = touch.clientX - interactionState.lastPanPosition.x;
+      const deltaY = touch.clientY - interactionState.lastPanPosition.y;
+      const result = calculatePanOffset(viewport, deltaX, deltaY, image.width, image.height, canvas.width, canvas.height, cropArea);
+      onViewportChange(result);
+      interactionState = { ...interactionState, lastPanPosition: { x: touch.clientX, y: touch.clientY } };
       return;
     }
 

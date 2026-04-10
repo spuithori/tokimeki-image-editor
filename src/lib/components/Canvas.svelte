@@ -2,7 +2,6 @@
   import { onMount, onDestroy } from 'svelte';
   import { drawImage, preloadStampImage, applyStamps, applyAnnotations } from '../utils/canvas';
   import { initWebGPUCanvas, uploadImageToGPU, renderWithAdjustments, cleanupWebGPU, setCanvasClearColor, updateCurveLUT } from '../utils/webgpu-render';
-  import { isToneCurveDefault } from '../utils/adjustments';
   import {
     createEditorInteractionState,
     handlePureMouseDown,

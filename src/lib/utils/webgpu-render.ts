@@ -5,7 +5,7 @@ import { COMPOSITE_SHADER_CODE } from '../shaders/composite';
 import { GRAIN_SHADER_CODE } from '../shaders/grain';
 import { SHARPEN_SHADER_CODE } from '../shaders/sharpen';
 import { DENOISE_SHADER_CODE } from '../shaders/denoise';
-import { generateCurveLUT, isToneCurveDefault } from './adjustments';
+import { generateCurveLUT } from './adjustments';
 
 const SHADER_CODE = IMAGE_EDITOR_SHADER_CODE;
 
@@ -54,16 +54,37 @@ let gpuSharpenUniformBuffer: GPUBuffer | null = null;
 let gpuDenoisePipeline: GPURenderPipeline | null = null;
 let gpuDenoiseUniformBuffer: GPUBuffer | null = null;
 
+// Export pipeline cache (reused across exports)
+let exportPipelineCache: {
+  device: GPUDevice;
+  mainPipeline: GPURenderPipeline;
+  blurPipeline: GPURenderPipeline;
+  grainPipeline: GPURenderPipeline;
+  sharpenPipeline: GPURenderPipeline;
+  denoisePipeline: GPURenderPipeline;
+  compositePipeline: GPURenderPipeline;
+  sampler: GPUSampler;
+} | null = null;
+
 // Tone Curve LUT texture (256×1 RGBA)
 let gpuCurveLUTTexture: GPUTexture | null = null;
 let gpuCurveLUTSampler: GPUSampler | null = null;
 
-// Helper functions and constants
-const BLUR_UNIFORMS_ZERO = new Float32Array([1.0, 0.0, 0.0, 0.0]);
+// Two-tier texture: full-res + Lanczos pre-downscaled preview
+// Both are pre-generated at image load time → zero-cost switching during zoom.
+let gpuTextureFullRes: GPUTexture | null = null;
+let gpuTexturePreview: GPUTexture | null = null;
+let activeTextureTier: 'full' | 'preview' = 'full';
 
+// Threshold below which bilinear sampling causes visible aliasing on downscale.
+const DOWNSCALE_THRESHOLD = 0.3;
+
+// Helper functions and constants
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
+
+const BLUR_UNIFORMS_ZERO = new Float32Array([1.0, 0.0, 0.0, 0.0]);
 
 function createRenderPass(
   commandEncoder: GPUCommandEncoder,
@@ -140,7 +161,7 @@ export async function initWebGPUCanvas(canvas: HTMLCanvasElement): Promise<boole
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
-    // Create sampler
+    // Bilinear filtering — adaptive texture resolution handles downscaling quality
     gpuSampler = gpuDevice.createSampler({
       magFilter: 'linear',
       minFilter: 'linear',
@@ -320,24 +341,52 @@ export async function uploadImageToGPU(imageSource: HTMLImageElement | ImageBitm
   if (!gpuDevice || !gpuPipeline) return false;
 
   try {
-    // Create texture from image
     const bitmap = imageSource instanceof ImageBitmap
       ? imageSource
       : await createImageBitmap(imageSource);
 
-    gpuTexture = gpuDevice.createTexture({
-      size: [bitmap.width, bitmap.height, 1],
+    const mkTex = (w: number, h: number) => gpuDevice!.createTexture({
+      size: [w, h, 1],
       format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
 
+    // --- Full-res texture ---
+    gpuTextureFullRes?.destroy();
+    gpuTextureFullRes = mkTex(bitmap.width, bitmap.height);
     gpuDevice.queue.copyExternalImageToTexture(
       { source: bitmap },
-      { texture: gpuTexture },
+      { texture: gpuTextureFullRes },
       [bitmap.width, bitmap.height]
     );
 
-    // Update bind group
+    // --- Preview texture (Lanczos pre-downscale at DOWNSCALE_THRESHOLD) ---
+    gpuTexturePreview?.destroy();
+    gpuTexturePreview = null;
+
+    const previewScale = DOWNSCALE_THRESHOLD;
+    const longestSide = Math.max(bitmap.width, bitmap.height);
+    // Only create preview if the image is large enough to benefit
+    if (longestSide * previewScale >= 256) {
+      const pw = Math.max(256, Math.ceil(bitmap.width * previewScale));
+      const ph = Math.max(256, Math.ceil(bitmap.height * previewScale));
+      const previewBitmap = await createImageBitmap(bitmap, {
+        resizeWidth: pw,
+        resizeHeight: ph,
+        resizeQuality: 'high', // Lanczos — same quality as <img>
+      });
+      gpuTexturePreview = mkTex(pw, ph);
+      gpuDevice.queue.copyExternalImageToTexture(
+        { source: previewBitmap },
+        { texture: gpuTexturePreview },
+        [pw, ph]
+      );
+      previewBitmap.close();
+    }
+
+    // Start with full-res active
+    gpuTexture = gpuTextureFullRes;
+    activeTextureTier = 'full';
     updateBindGroup();
     return true;
   } catch (error) {
@@ -446,6 +495,19 @@ export function renderWithAdjustments(
 ): boolean {
   if (!gpuDevice || !gpuContext || !gpuPipeline || !gpuBindGroup || !gpuUniformBuffer) {
     return false;
+  }
+
+  // Instant texture tier switch — no async work, pre-generated at load time
+  const effectiveScale = viewport.scale * viewport.zoom;
+  const wantPreview = effectiveScale < DOWNSCALE_THRESHOLD && gpuTexturePreview !== null;
+  const targetTier = wantPreview ? 'preview' : 'full';
+  if (targetTier !== activeTextureTier) {
+    const nextTexture = targetTier === 'preview' ? gpuTexturePreview : gpuTextureFullRes;
+    if (nextTexture) {
+      gpuTexture = nextTexture;
+      activeTextureTier = targetTier;
+      updateBindGroup();
+    }
   }
 
   try {
@@ -1180,6 +1242,45 @@ export function isWebGPUInitialized(): boolean {
 }
 
 /**
+ * Initialize or retrieve cached export pipelines
+ */
+function getExportPipelines(device: GPUDevice): typeof exportPipelineCache {
+  if (exportPipelineCache && exportPipelineCache.device === device) {
+    return exportPipelineCache;
+  }
+
+  const format = navigator.gpu.getPreferredCanvasFormat();
+  const rgba8Targets = [{ format: 'rgba8unorm' as GPUTextureFormat }];
+  const opts = { primitive: { topology: 'triangle-list' as GPUPrimitiveTopology }, layout: 'auto' as const };
+
+  const mkPipeline = (code: string, targets = rgba8Targets) => {
+    const mod = device.createShaderModule({ code });
+    return device.createRenderPipeline({
+      ...opts,
+      vertex: { module: mod, entryPoint: 'vs_main' },
+      fragment: { module: mod, entryPoint: 'fs_main', targets },
+    });
+  };
+
+  exportPipelineCache = {
+    device,
+    mainPipeline: mkPipeline(SHADER_CODE),
+    blurPipeline: mkPipeline(BLUR_SHADER_CODE),
+    grainPipeline: mkPipeline(GRAIN_SHADER_CODE, [{ format }]),
+    sharpenPipeline: mkPipeline(SHARPEN_SHADER_CODE),
+    denoisePipeline: mkPipeline(DENOISE_SHADER_CODE),
+    compositePipeline: mkPipeline(COMPOSITE_SHADER_CODE),
+    sampler: device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    }),
+  };
+  return exportPipelineCache;
+}
+
+/**
  * Export image using WebGPU rendering at full resolution
  * Creates an offscreen canvas and renders the final image with all adjustments
  */
@@ -1191,25 +1292,21 @@ export async function exportWithWebGPU(
   blurAreas: BlurArea[] = []
 ): Promise<HTMLCanvasElement | null> {
   try {
-    // Detect mobile devices
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    if (isMobile) {
-      console.log('Mobile device detected, WebGPU export may have limited support');
-    }
-
-    // Get adapter and device
     if (!navigator.gpu) {
       console.warn('WebGPU not supported for export');
       return null;
     }
 
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) {
-      console.warn('No WebGPU adapter for export');
-      return null;
+    // Reuse global device if available, otherwise create new one
+    let device = gpuDevice;
+    let deviceIsOwned = false;
+    if (!device) {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) return null;
+      device = await adapter.requestDevice();
+      deviceIsOwned = true;
     }
 
-    const device = await adapter.requestDevice();
     const format = navigator.gpu.getPreferredCanvasFormat();
 
     // Calculate output dimensions based on crop and rotation
@@ -1249,150 +1346,36 @@ export async function exportWithWebGPU(
       [bitmap.width, bitmap.height]
     );
 
-    // Create sampler
-    const sampler = device.createSampler({
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
+    // Get cached pipelines (or create once)
+    const pipelines = getExportPipelines(device)!;
+    const { mainPipeline, blurPipeline, grainPipeline, sharpenPipeline, denoisePipeline, compositePipeline, sampler } = pipelines;
 
-    // Create pipelines
-    const mainShaderModule = device.createShaderModule({ code: SHADER_CODE });
-    const mainPipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: mainShaderModule, entryPoint: 'vs_main' },
-      fragment: {
-        module: mainShaderModule,
-        entryPoint: 'fs_main',
-        targets: [{ format: 'rgba8unorm' }],
-      },
-      primitive: { topology: 'triangle-list' },
-    });
+    // Create uniform buffers
+    const mainUniformBuffer = device.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const blurUniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const grainUniformBuffer = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const sharpenUniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const denoiseUniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-    const blurShaderModule = device.createShaderModule({ code: BLUR_SHADER_CODE });
-    const blurPipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: blurShaderModule, entryPoint: 'vs_main' },
-      fragment: {
-        module: blurShaderModule,
-        entryPoint: 'fs_main',
-        targets: [{ format: 'rgba8unorm' }],
-      },
-      primitive: { topology: 'triangle-list' },
-    });
-
-    const grainShaderModule = device.createShaderModule({ code: GRAIN_SHADER_CODE });
-    const grainPipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: grainShaderModule, entryPoint: 'vs_main' },
-      fragment: {
-        module: grainShaderModule,
-        entryPoint: 'fs_main',
-        targets: [{ format }],
-      },
-      primitive: { topology: 'triangle-list' },
-    });
-
-    const compositeShaderModule = device.createShaderModule({ code: COMPOSITE_SHADER_CODE });
-    const compositePipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: compositeShaderModule, entryPoint: 'vs_main' },
-      fragment: {
-        module: compositeShaderModule,
-        entryPoint: 'fs_main',
-        targets: [{ format: 'rgba8unorm' }],
-      },
-      primitive: { topology: 'triangle-list' },
-    });
-
-    // Create sharpen pipeline
-    const sharpenShaderModule = device.createShaderModule({ code: SHARPEN_SHADER_CODE });
-    const sharpenPipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: sharpenShaderModule, entryPoint: 'vs_main' },
-      fragment: { module: sharpenShaderModule, entryPoint: 'fs_main', targets: [{ format: 'rgba8unorm' }] },
-      primitive: { topology: 'triangle-list' },
-    });
-
-    // Create denoise pipeline
-    const denoiseShaderModule = device.createShaderModule({ code: DENOISE_SHADER_CODE });
-    const denoisePipeline = device.createRenderPipeline({
-      layout: 'auto',
-      vertex: { module: denoiseShaderModule, entryPoint: 'vs_main' },
-      fragment: { module: denoiseShaderModule, entryPoint: 'fs_main', targets: [{ format: 'rgba8unorm' }] },
-      primitive: { topology: 'triangle-list' },
-    });
-
-    // Create uniform buffers — main buffer at 256 bytes to match preview pipeline
-    const mainUniformBuffer = device.createBuffer({
-      size: 256,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    const blurUniformBuffer = device.createBuffer({
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    const grainUniformBuffer = device.createBuffer({
-      size: 80,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    const sharpenUniformBuffer = device.createBuffer({
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    const denoiseUniformBuffer = device.createBuffer({
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    // Create tone curve LUT texture for export
-    const curveLUTTexture = device.createTexture({
-      size: [256, 1, 1],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    const curveLUTSampler = device.createSampler({
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
-
-    // Upload tone curve LUT
+    // Tone curve LUT texture
+    const curveLUTTexture = device.createTexture({ size: [256, 1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    const curveLUTSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
     const lutData = generateCurveLUT(adjustments.toneCurve);
-    device.queue.writeTexture(
-      { texture: curveLUTTexture },
-      lutData,
-      { bytesPerRow: 256 * 4 },
-      [256, 1, 1]
-    );
+    device.queue.writeTexture({ texture: curveLUTTexture }, lutData, { bytesPerRow: 256 * 4 }, [256, 1, 1]);
 
-    // Create intermediate textures
-    const intermediate1 = device.createTexture({
-      size: [outputWidth, outputHeight, 1],
-      format: 'rgba8unorm',
+    // Determine which effects are active
+    const needsAccumulator = adjustments.denoise > 0 || adjustments.sharpen > 0 || adjustments.blur > 0 || blurAreas.length > 0;
+    const needsExtra = adjustments.sharpen > 0 || adjustments.blur > 0 || blurAreas.length > 0;
+
+    // Lazy texture allocation — only create what's needed
+    const mkTex = () => device.createTexture({
+      size: [outputWidth, outputHeight, 1], format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    const intermediate2 = device.createTexture({
-      size: [outputWidth, outputHeight, 1],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    const intermediate3 = device.createTexture({
-      size: [outputWidth, outputHeight, 1],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    const intermediate4 = device.createTexture({
-      size: [outputWidth, outputHeight, 1],
-      format: 'rgba8unorm',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
-    });
+    const intermediate1 = mkTex();
+    const intermediate2 = needsExtra ? mkTex() : null;
+    const intermediate3 = needsExtra ? mkTex() : null;
+    const intermediate4 = needsAccumulator ? mkTex() : null;
 
     // Setup viewport and transform for export (no zoom/pan, centered)
     const viewport: Viewport = {
@@ -1439,7 +1422,7 @@ export async function exportWithWebGPU(
     ]);
     device.queue.writeBuffer(mainUniformBuffer, 0, uniformData);
 
-    // Create bind group for main pass (includes curve LUT texture)
+    // Create bind group for main pass
     const mainBindGroup = device.createBindGroup({
       layout: mainPipeline.getBindGroupLayout(0),
       entries: [
@@ -1451,73 +1434,48 @@ export async function exportWithWebGPU(
       ],
     });
 
-    // Pass 1: Render with adjustments
-    let commandEncoder = device.createCommandEncoder();
-    const renderPass1 = commandEncoder.beginRenderPass({
-      colorAttachments: [{
-        view: intermediate1.createView(),
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      }],
-    });
-    renderPass1.setPipeline(mainPipeline);
-    renderPass1.setBindGroup(0, mainBindGroup);
-    renderPass1.draw(3, 1, 0, 0);
-    renderPass1.end();
-    device.queue.submit([commandEncoder.finish()]);
+    // Track which texture holds the current result for the grain/final pass
+    let currentResultView = intermediate1.createView();
 
-    // Pass 2: Copy to accumulator
-    commandEncoder = device.createCommandEncoder();
-    device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
-    const copyBindGroup = device.createBindGroup({
-      layout: blurPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: sampler },
-        { binding: 1, resource: intermediate1.createView() },
-        { binding: 2, resource: { buffer: blurUniformBuffer } },
-      ],
-    });
-    const copyPass = commandEncoder.beginRenderPass({
-      colorAttachments: [{
-        view: intermediate4.createView(),
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      }],
-    });
-    copyPass.setPipeline(blurPipeline);
-    copyPass.setBindGroup(0, copyBindGroup);
-    copyPass.draw(3, 1, 0, 0);
-    copyPass.end();
-    device.queue.submit([commandEncoder.finish()]);
+    // Helper: submit a single render pass with its own command encoder
+    const submitPass = (view: GPUTextureView, pipeline: GPURenderPipeline, bindGroup: GPUBindGroup) => {
+      const enc = device.createCommandEncoder();
+      createRenderPass(enc, view, pipeline, bindGroup);
+      device.queue.submit([enc.finish()]);
+    };
+
+    // Pass 1: Render with adjustments → intermediate1
+    submitPass(intermediate1.createView(), mainPipeline, mainBindGroup);
+
+    // Pass 2: Copy to accumulator (only if post-processing effects are active)
+    if (needsAccumulator) {
+      device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
+      const copyBg = device.createBindGroup({
+        layout: blurPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate1.createView() },
+          { binding: 2, resource: { buffer: blurUniformBuffer } },
+        ],
+      });
+      submitPass(intermediate4!.createView(), blurPipeline, copyBg);
+      currentResultView = intermediate4!.createView();
+    }
 
     // Pass 2b: Denoise (bilateral filter) if enabled
-    if (adjustments.denoise > 0) {
-      commandEncoder = device.createCommandEncoder();
-      const denoiseUniforms = new Float32Array([adjustments.denoise / 100, 0, 0, 0]);
-      device.queue.writeBuffer(denoiseUniformBuffer, 0, denoiseUniforms);
-
+    if (adjustments.denoise > 0 && intermediate2) {
+      device.queue.writeBuffer(denoiseUniformBuffer, 0, new Float32Array([adjustments.denoise / 100, 0, 0, 0]));
       const denoiseBindGroup = device.createBindGroup({
         layout: denoisePipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: sampler },
-          { binding: 1, resource: intermediate4.createView() },
+          { binding: 1, resource: intermediate4!.createView() },
           { binding: 2, resource: { buffer: denoiseUniformBuffer } },
         ],
       });
-
-      const denoisePass = commandEncoder.beginRenderPass({
-        colorAttachments: [{ view: intermediate2.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-      });
-      denoisePass.setPipeline(denoisePipeline);
-      denoisePass.setBindGroup(0, denoiseBindGroup);
-      denoisePass.draw(3, 1, 0, 0);
-      denoisePass.end();
-      device.queue.submit([commandEncoder.finish()]);
+      submitPass(intermediate2.createView(), denoisePipeline, denoiseBindGroup);
 
       // Copy denoised → accumulator
-      commandEncoder = device.createCommandEncoder();
       device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
       const dnCopyBg = device.createBindGroup({
         layout: blurPipeline.getBindGroupLayout(0),
@@ -1527,42 +1485,26 @@ export async function exportWithWebGPU(
           { binding: 2, resource: { buffer: blurUniformBuffer } },
         ],
       });
-      const dnCopyPass = commandEncoder.beginRenderPass({
-        colorAttachments: [{ view: intermediate4.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-      });
-      dnCopyPass.setPipeline(blurPipeline);
-      dnCopyPass.setBindGroup(0, dnCopyBg);
-      dnCopyPass.draw(3, 1, 0, 0);
-      dnCopyPass.end();
-      device.queue.submit([commandEncoder.finish()]);
+      submitPass(intermediate4!.createView(), blurPipeline, dnCopyBg);
     }
 
     // Pass 2c: Sharpen (unsharp mask) if enabled
-    if (adjustments.sharpen > 0) {
-      const sharpenBlurRadius = 4; // σ≈1.3
+    if (adjustments.sharpen > 0 && intermediate2 && intermediate3) {
+      const sharpenBlurRadius = 4;
 
       // Horizontal blur → intermediate2
-      commandEncoder = device.createCommandEncoder();
       device.queue.writeBuffer(blurUniformBuffer, 0, new Float32Array([1.0, 0.0, sharpenBlurRadius, 0.0]));
       const shBgH = device.createBindGroup({
         layout: blurPipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: sampler },
-          { binding: 1, resource: intermediate4.createView() },
+          { binding: 1, resource: intermediate4!.createView() },
           { binding: 2, resource: { buffer: blurUniformBuffer } },
         ],
       });
-      const shPassH = commandEncoder.beginRenderPass({
-        colorAttachments: [{ view: intermediate2.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-      });
-      shPassH.setPipeline(blurPipeline);
-      shPassH.setBindGroup(0, shBgH);
-      shPassH.draw(3, 1, 0, 0);
-      shPassH.end();
-      device.queue.submit([commandEncoder.finish()]);
+      submitPass(intermediate2.createView(), blurPipeline, shBgH);
 
       // Vertical blur → intermediate3
-      commandEncoder = device.createCommandEncoder();
       device.queue.writeBuffer(blurUniformBuffer, 0, new Float32Array([0.0, 1.0, sharpenBlurRadius, 0.0]));
       const shBgV = device.createBindGroup({
         layout: blurPipeline.getBindGroupLayout(0),
@@ -1572,17 +1514,9 @@ export async function exportWithWebGPU(
           { binding: 2, resource: { buffer: blurUniformBuffer } },
         ],
       });
-      const shPassV = commandEncoder.beginRenderPass({
-        colorAttachments: [{ view: intermediate3.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-      });
-      shPassV.setPipeline(blurPipeline);
-      shPassV.setBindGroup(0, shBgV);
-      shPassV.draw(3, 1, 0, 0);
-      shPassV.end();
-      device.queue.submit([commandEncoder.finish()]);
+      submitPass(intermediate3.createView(), blurPipeline, shBgV);
 
-      // Unsharp mask composite: original(intermediate4) + blurred(intermediate3) → intermediate2
-      commandEncoder = device.createCommandEncoder();
+      // Unsharp mask composite → intermediate2
       const sharpAmt = adjustments.sharpen / 50.0;
       const sharpThresh = 0.01 + adjustments.sharpen * 0.0004;
       device.queue.writeBuffer(sharpenUniformBuffer, 0, new Float32Array([sharpAmt, sharpThresh, 0, 0]));
@@ -1590,22 +1524,14 @@ export async function exportWithWebGPU(
         layout: sharpenPipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: sampler },
-          { binding: 1, resource: intermediate4.createView() },
+          { binding: 1, resource: intermediate4!.createView() },
           { binding: 2, resource: intermediate3.createView() },
           { binding: 3, resource: { buffer: sharpenUniformBuffer } },
         ],
       });
-      const sharpPass = commandEncoder.beginRenderPass({
-        colorAttachments: [{ view: intermediate2.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-      });
-      sharpPass.setPipeline(sharpenPipeline);
-      sharpPass.setBindGroup(0, sharpBg);
-      sharpPass.draw(3, 1, 0, 0);
-      sharpPass.end();
-      device.queue.submit([commandEncoder.finish()]);
+      submitPass(intermediate2.createView(), sharpenPipeline, sharpBg);
 
       // Copy sharpened → accumulator
-      commandEncoder = device.createCommandEncoder();
       device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
       const shCopyBg = device.createBindGroup({
         layout: blurPipeline.getBindGroupLayout(0),
@@ -1615,51 +1541,28 @@ export async function exportWithWebGPU(
           { binding: 2, resource: { buffer: blurUniformBuffer } },
         ],
       });
-      const shCopyPass = commandEncoder.beginRenderPass({
-        colorAttachments: [{ view: intermediate4.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
-      });
-      shCopyPass.setPipeline(blurPipeline);
-      shCopyPass.setBindGroup(0, shCopyBg);
-      shCopyPass.draw(3, 1, 0, 0);
-      shCopyPass.end();
-      device.queue.submit([commandEncoder.finish()]);
+      submitPass(intermediate4!.createView(), blurPipeline, shCopyBg);
     }
 
     // Pass 3a: Apply global blur if needed
-    if (adjustments.blur > 0) {
+    if (adjustments.blur > 0 && intermediate2) {
       const globalBlurRadius = Math.ceil((adjustments.blur / 100) * 10);
 
       // Horizontal pass
-      commandEncoder = device.createCommandEncoder();
-      const blurUniformsH = new Float32Array([1.0, 0.0, globalBlurRadius, 0.0]);
-      device.queue.writeBuffer(blurUniformBuffer, 0, blurUniformsH);
-      const blurBindGroupH = device.createBindGroup({
+      device.queue.writeBuffer(blurUniformBuffer, 0, new Float32Array([1.0, 0.0, globalBlurRadius, 0.0]));
+      const blurBgH = device.createBindGroup({
         layout: blurPipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: sampler },
-          { binding: 1, resource: intermediate4.createView() },
+          { binding: 1, resource: intermediate4!.createView() },
           { binding: 2, resource: { buffer: blurUniformBuffer } },
         ],
       });
-      const blurPassH = commandEncoder.beginRenderPass({
-        colorAttachments: [{
-          view: intermediate2.createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        }],
-      });
-      blurPassH.setPipeline(blurPipeline);
-      blurPassH.setBindGroup(0, blurBindGroupH);
-      blurPassH.draw(3, 1, 0, 0);
-      blurPassH.end();
-      device.queue.submit([commandEncoder.finish()]);
+      submitPass(intermediate2.createView(), blurPipeline, blurBgH);
 
       // Vertical pass
-      commandEncoder = device.createCommandEncoder();
-      const blurUniformsV = new Float32Array([0.0, 1.0, globalBlurRadius, 0.0]);
-      device.queue.writeBuffer(blurUniformBuffer, 0, blurUniformsV);
-      const blurBindGroupV = device.createBindGroup({
+      device.queue.writeBuffer(blurUniformBuffer, 0, new Float32Array([0.0, 1.0, globalBlurRadius, 0.0]));
+      const blurBgV = device.createBindGroup({
         layout: blurPipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: sampler },
@@ -1667,72 +1570,42 @@ export async function exportWithWebGPU(
           { binding: 2, resource: { buffer: blurUniformBuffer } },
         ],
       });
-      const blurPassV = commandEncoder.beginRenderPass({
-        colorAttachments: [{
-          view: intermediate4.createView(),
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
-          loadOp: 'clear',
-          storeOp: 'store',
-        }],
-      });
-      blurPassV.setPipeline(blurPipeline);
-      blurPassV.setBindGroup(0, blurBindGroupV);
-      blurPassV.draw(3, 1, 0, 0);
-      blurPassV.end();
-      device.queue.submit([commandEncoder.finish()]);
+      submitPass(intermediate4!.createView(), blurPipeline, blurBgV);
     }
 
-    // Pass 3b: Apply regional blur areas
-    if (blurAreas.length > 0) {
-      // Create composite uniform buffer for blur area compositing
-      const compositeUniformBuffer = device.createBuffer({
-        size: 16,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
+    // Pass 3b: Apply regional blur areas (separate submissions per blur area due to varying uniforms)
+    if (blurAreas.length > 0 && intermediate2 && intermediate3 && intermediate4) {
+      const compositeUniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-      // For export, we use a centered viewport with no zoom/pan
-      // Image is rendered at full resolution, centered
-      const totalScale = viewport.scale * viewport.zoom * transform.scale; // All 1.0 for export
+      const totalScale = viewport.scale * viewport.zoom * transform.scale;
       const centerX = outputWidth / 2;
       const centerY = outputHeight / 2;
-
-      // Determine source dimensions based on crop
-      const sourceWidth = cropArea ? cropArea.width : bitmap.width;
-      const sourceHeight = cropArea ? cropArea.height : bitmap.height;
-      const cropOffsetX = cropArea ? cropArea.x : 0;
-      const cropOffsetY = cropArea ? cropArea.y : 0;
+      const srcW = cropArea ? cropArea.width : bitmap.width;
+      const srcH = cropArea ? cropArea.height : bitmap.height;
+      const cropOffX = cropArea ? cropArea.x : 0;
+      const cropOffY = cropArea ? cropArea.y : 0;
 
       for (const blurArea of blurAreas) {
         if (blurArea.blurStrength <= 0) continue;
 
-        // Calculate blur radius to match Canvas2D behavior
-        // For export, totalScale = 1.0, so blur is in image pixels
         const imageBlurPx = (blurArea.blurStrength / 100) * 100;
         const blurRadius = Math.ceil(imageBlurPx * totalScale);
+        const relX = blurArea.x - cropOffX;
+        const relY = blurArea.y - cropOffY;
+        const cbX = (relX - srcW / 2) * totalScale + centerX + viewport.offsetX;
+        const cbY = (relY - srcH / 2) * totalScale + centerY + viewport.offsetY;
+        const cbW = blurArea.width * totalScale;
+        const cbH = blurArea.height * totalScale;
+        const minX = clamp(cbX / outputWidth, 0, 1);
+        const minY = clamp(cbY / outputHeight, 0, 1);
+        const maxX = clamp((cbX + cbW) / outputWidth, 0, 1);
+        const maxY = clamp((cbY + cbH) / outputHeight, 0, 1);
 
-        // Convert blur area from image space to canvas space, then to UV coordinates
-        // 1. Convert to crop-relative coordinates
-        const relativeX = blurArea.x - cropOffsetX;
-        const relativeY = blurArea.y - cropOffsetY;
+        // Each pass needs its own submit so writeBuffer values are consumed correctly
 
-        // 2. Transform from image space to canvas space
-        // For export: viewport offset = 0, zoom = 1, scale = 1
-        const canvasBlurX = (relativeX - sourceWidth / 2) * totalScale + centerX + viewport.offsetX;
-        const canvasBlurY = (relativeY - sourceHeight / 2) * totalScale + centerY + viewport.offsetY;
-        const canvasBlurWidth = blurArea.width * totalScale;
-        const canvasBlurHeight = blurArea.height * totalScale;
-
-        // 3. Convert to normalized UV coordinates (0-1)
-        const minX = clamp(canvasBlurX / outputWidth, 0, 1);
-        const minY = clamp(canvasBlurY / outputHeight, 0, 1);
-        const maxX = clamp((canvasBlurX + canvasBlurWidth) / outputWidth, 0, 1);
-        const maxY = clamp((canvasBlurY + canvasBlurHeight) / outputHeight, 0, 1);
-
-        // Horizontal blur: intermediate1 (base) -> intermediate2
-        commandEncoder = device.createCommandEncoder();
-        const blurUniformsH = new Float32Array([1.0, 0.0, blurRadius, 0.0]);
-        device.queue.writeBuffer(blurUniformBuffer, 0, blurUniformsH);
-        const blurBindGroupH = device.createBindGroup({
+        // Horizontal blur: intermediate1 → intermediate2
+        device.queue.writeBuffer(blurUniformBuffer, 0, new Float32Array([1.0, 0.0, blurRadius, 0.0]));
+        const bBgH = device.createBindGroup({
           layout: blurPipeline.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: sampler },
@@ -1740,25 +1613,11 @@ export async function exportWithWebGPU(
             { binding: 2, resource: { buffer: blurUniformBuffer } },
           ],
         });
-        const blurPassH = commandEncoder.beginRenderPass({
-          colorAttachments: [{
-            view: intermediate2.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          }],
-        });
-        blurPassH.setPipeline(blurPipeline);
-        blurPassH.setBindGroup(0, blurBindGroupH);
-        blurPassH.draw(3, 1, 0, 0);
-        blurPassH.end();
-        device.queue.submit([commandEncoder.finish()]);
+        submitPass(intermediate2.createView(), blurPipeline, bBgH);
 
-        // Vertical blur: intermediate2 -> intermediate3
-        commandEncoder = device.createCommandEncoder();
-        const blurUniformsV = new Float32Array([0.0, 1.0, blurRadius, 0.0]);
-        device.queue.writeBuffer(blurUniformBuffer, 0, blurUniformsV);
-        const blurBindGroupV = device.createBindGroup({
+        // Vertical blur: intermediate2 → intermediate3
+        device.queue.writeBuffer(blurUniformBuffer, 0, new Float32Array([0.0, 1.0, blurRadius, 0.0]));
+        const bBgV = device.createBindGroup({
           layout: blurPipeline.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: sampler },
@@ -1766,51 +1625,24 @@ export async function exportWithWebGPU(
             { binding: 2, resource: { buffer: blurUniformBuffer } },
           ],
         });
-        const blurPassV = commandEncoder.beginRenderPass({
-          colorAttachments: [{
-            view: intermediate3.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          }],
-        });
-        blurPassV.setPipeline(blurPipeline);
-        blurPassV.setBindGroup(0, blurBindGroupV);
-        blurPassV.draw(3, 1, 0, 0);
-        blurPassV.end();
-        device.queue.submit([commandEncoder.finish()]);
+        submitPass(intermediate3.createView(), blurPipeline, bBgV);
 
-        // Composite: blend intermediate3 (blurred region) with intermediate4 (accumulator)
-        commandEncoder = device.createCommandEncoder();
-        const compositeUniforms = new Float32Array([minX, minY, maxX, maxY]);
-        device.queue.writeBuffer(compositeUniformBuffer, 0, compositeUniforms);
-        const compositeBindGroup = device.createBindGroup({
+        // Composite: blend blurred region with accumulator
+        device.queue.writeBuffer(compositeUniformBuffer, 0, new Float32Array([minX, minY, maxX, maxY]));
+        const compBg = device.createBindGroup({
           layout: compositePipeline.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: sampler },
-            { binding: 1, resource: intermediate3.createView() }, // blurred
-            { binding: 2, resource: intermediate4.createView() }, // accumulator
+            { binding: 1, resource: intermediate3.createView() },
+            { binding: 2, resource: intermediate4.createView() },
             { binding: 3, resource: { buffer: compositeUniformBuffer } },
           ],
         });
-        const compositePass = commandEncoder.beginRenderPass({
-          colorAttachments: [{
-            view: intermediate2.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          }],
-        });
-        compositePass.setPipeline(compositePipeline);
-        compositePass.setBindGroup(0, compositeBindGroup);
-        compositePass.draw(3, 1, 0, 0);
-        compositePass.end();
-        device.queue.submit([commandEncoder.finish()]);
+        submitPass(intermediate2.createView(), compositePipeline, compBg);
 
-        // Copy back to accumulator: intermediate2 -> intermediate4
-        commandEncoder = device.createCommandEncoder();
+        // Copy back to accumulator
         device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
-        const copyBackBindGroup = device.createBindGroup({
+        const copyBackBg = device.createBindGroup({
           layout: blurPipeline.getBindGroupLayout(0),
           entries: [
             { binding: 0, resource: sampler },
@@ -1818,33 +1650,15 @@ export async function exportWithWebGPU(
             { binding: 2, resource: { buffer: blurUniformBuffer } },
           ],
         });
-        const copyBackPass = commandEncoder.beginRenderPass({
-          colorAttachments: [{
-            view: intermediate4.createView(),
-            clearValue: { r: 0, g: 0, b: 0, a: 1 },
-            loadOp: 'clear',
-            storeOp: 'store',
-          }],
-        });
-        copyBackPass.setPipeline(blurPipeline);
-        copyBackPass.setBindGroup(0, copyBackBindGroup);
-        copyBackPass.draw(3, 1, 0, 0);
-        copyBackPass.end();
-        device.queue.submit([commandEncoder.finish()]);
+        submitPass(intermediate4.createView(), blurPipeline, copyBackBg);
       }
 
-      // Cleanup composite buffer
       compositeUniformBuffer.destroy();
     }
 
-    // Pass 4: Apply grain or copy to canvas
-    // Note: Always use grain pipeline to render to canvas because it has the correct format
-    // When grain is 0, the grain shader will just pass through the image
-    commandEncoder = device.createCommandEncoder();
-    const canvasView = context.getCurrentTexture().createView();
-
+    // Pass 4: Grain / final pass → canvas
     const grainUniforms = new Float32Array([
-      adjustments.grain, // Use actual grain value (0 if no grain)
+      adjustments.grain,
       viewport.zoom, viewport.offsetX, viewport.offsetY, viewport.scale,
       rotationRad,
       transform.flipHorizontal ? -1.0 : 1.0,
@@ -1862,84 +1676,24 @@ export async function exportWithWebGPU(
       layout: grainPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: sampler },
-        { binding: 1, resource: intermediate4.createView() },
+        { binding: 1, resource: currentResultView },
         { binding: 2, resource: { buffer: grainUniformBuffer } },
       ],
     });
 
-    const grainPass = commandEncoder.beginRenderPass({
-      colorAttachments: [{
-        view: canvasView,
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
-        loadOp: 'clear',
-        storeOp: 'store',
-      }],
-    });
-    grainPass.setPipeline(grainPipeline);
-    grainPass.setBindGroup(0, grainBindGroup);
-    grainPass.draw(3, 1, 0, 0);
-    grainPass.end();
+    const finalEncoder = device.createCommandEncoder();
+    const canvasView = context.getCurrentTexture().createView();
+    createRenderPass(finalEncoder, canvasView, grainPipeline, grainBindGroup);
+    device.queue.submit([finalEncoder.finish()]);
 
-    device.queue.submit([commandEncoder.finish()]);
-
-    // Wait for rendering to complete
     await device.queue.onSubmittedWorkDone();
 
-    // Validate that the canvas has actual content (not all black)
-    // This is important for mobile devices where WebGPU might fail silently
-    try {
-      const ctx2d = document.createElement('canvas').getContext('2d');
-      if (ctx2d) {
-        const testCanvas = document.createElement('canvas');
-        testCanvas.width = Math.min(canvas.width, 100);
-        testCanvas.height = Math.min(canvas.height, 100);
-        const testCtx = testCanvas.getContext('2d');
-
-        if (testCtx) {
-          // Draw a small portion of the WebGPU canvas to test
-          testCtx.drawImage(canvas, 0, 0, testCanvas.width, testCanvas.height);
-          const imageData = testCtx.getImageData(0, 0, testCanvas.width, testCanvas.height);
-          const data = imageData.data;
-
-          // Check if at least some pixels are non-zero
-          let hasContent = false;
-          for (let i = 0; i < data.length; i += 4) {
-            // Check RGB values (ignore alpha)
-            if (data[i] > 0 || data[i + 1] > 0 || data[i + 2] > 0) {
-              hasContent = true;
-              break;
-            }
-          }
-
-          if (!hasContent) {
-            console.warn('WebGPU export produced empty/black canvas, will use Canvas2D fallback');
-            // Cleanup before returning null
-            texture.destroy();
-            intermediate1.destroy();
-            intermediate2.destroy();
-            intermediate3.destroy();
-            intermediate4.destroy();
-            mainUniformBuffer.destroy();
-            blurUniformBuffer.destroy();
-            grainUniformBuffer.destroy();
-            sharpenUniformBuffer.destroy();
-            denoiseUniformBuffer.destroy();
-            curveLUTTexture.destroy();
-            return null;
-          }
-        }
-      }
-    } catch (validationError) {
-      console.warn('Failed to validate WebGPU canvas, assuming it is valid:', validationError);
-      // If validation fails, assume the canvas is valid and continue
-    }
-
-    // Cleanup
+    // Cleanup per-export resources (pipelines/sampler are cached)
     texture.destroy();
     intermediate1.destroy();
-    intermediate2.destroy();
-    intermediate3.destroy();
-    intermediate4.destroy();
+    intermediate2?.destroy();
+    intermediate3?.destroy();
+    intermediate4?.destroy();
     mainUniformBuffer.destroy();
     blurUniformBuffer.destroy();
     grainUniformBuffer.destroy();
@@ -1958,22 +1712,31 @@ export async function exportWithWebGPU(
  * Cleanup WebGPU resources
  */
 export function cleanupWebGPU() {
-  gpuTexture?.destroy();
+  // Destroy GPU resources (gpuTexture is an alias to fullRes/preview — don't destroy it separately)
+  gpuTextureFullRes?.destroy();
+  gpuTexturePreview?.destroy();
   gpuUniformBuffer?.destroy();
   gpuBlurUniformBuffer?.destroy();
   gpuCompositeUniformBuffer?.destroy();
   gpuGrainUniformBuffer?.destroy();
+  gpuSharpenUniformBuffer?.destroy();
+  gpuDenoiseUniformBuffer?.destroy();
+  gpuCurveLUTTexture?.destroy();
   gpuIntermediateTexture?.destroy();
   gpuIntermediateTexture2?.destroy();
   gpuIntermediateTexture3?.destroy();
   gpuIntermediateTexture4?.destroy();
 
+  // Reset all module state
   gpuDevice = null;
   gpuContext = null;
   gpuPipeline = null;
   gpuUniformBuffer = null;
   gpuSampler = null;
   gpuTexture = null;
+  gpuTextureFullRes = null;
+  gpuTexturePreview = null;
+  activeTextureTier = 'full';
   gpuBindGroup = null;
   gpuBlurPipeline = null;
   gpuBlurUniformBuffer = null;
@@ -1981,8 +1744,15 @@ export function cleanupWebGPU() {
   gpuCompositeUniformBuffer = null;
   gpuGrainPipeline = null;
   gpuGrainUniformBuffer = null;
+  gpuSharpenPipeline = null;
+  gpuSharpenUniformBuffer = null;
+  gpuDenoisePipeline = null;
+  gpuDenoiseUniformBuffer = null;
+  gpuCurveLUTTexture = null;
+  gpuCurveLUTSampler = null;
   gpuIntermediateTexture = null;
   gpuIntermediateTexture2 = null;
   gpuIntermediateTexture3 = null;
   gpuIntermediateTexture4 = null;
+  exportPipelineCache = null;
 }

@@ -4,6 +4,7 @@
   import { X, Trash2, Droplet, Info } from 'lucide-svelte';
   import type { BlurArea, Viewport, TransformState, CropArea } from '../types';
   import { screenToImageCoords, imageToCanvasCoords } from '../utils/canvas';
+  import { calculateZoomViewport, calculatePanOffset } from '../utils/editor-interaction';
   import FloatingRail from './FloatingRail.svelte';
   import RailButton from './RailButton.svelte';
   import Popover from './Popover.svelte';
@@ -84,6 +85,12 @@
   // Viewport panning
   let isPanning = $state(false);
   let lastPanPosition = $state({ x: 0, y: 0 });
+
+  // Two-finger pinch/pan gesture state
+  let isTwoFingerTouch = $state(false);
+  let initialPinchDistance = $state(0);
+  let initialPinchZoom = $state(1);
+  let lastPinchCenter = $state({ x: 0, y: 0 });
 
   // Convert blur areas to canvas coordinates for rendering
   let canvasBlurAreas = $derived.by(() => {
@@ -397,13 +404,83 @@
     blurAreas.find(area => area.id === selectedAreaId)
   );
 
-  // Unified touch handlers
-  const handleContainerTouchStart = handleContainerMouseDown;
-  const handleTouchMove = handleMouseMove;
+  // Touch handlers with 2-finger pinch/pan support
+  function handleContainerTouchStart(event: TouchEvent) {
+    if (event.touches.length === 2) {
+      event.preventDefault();
+      // Cancel any in-progress creation
+      if (isCreating) {
+        isCreating = false;
+        createStart = null;
+        createEnd = null;
+      }
+      isTwoFingerTouch = true;
+      initialPinchDistance = 0;
+      initialPinchZoom = viewport.zoom;
+      return;
+    }
+    if (event.touches.length === 1 && !isTwoFingerTouch) {
+      handleContainerMouseDown(event);
+    }
+  }
+
+  function handleTouchMove(event: TouchEvent) {
+    // Two-finger pinch zoom + pan
+    if (event.touches.length === 2 && onViewportChange && canvas) {
+      event.preventDefault();
+      const touch1 = event.touches[0];
+      const touch2 = event.touches[1];
+      const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+      const centerX = (touch1.clientX + touch2.clientX) / 2;
+      const centerY = (touch1.clientY + touch2.clientY) / 2;
+
+      if (initialPinchDistance === 0) {
+        initialPinchDistance = distance;
+        initialPinchZoom = viewport.zoom;
+        lastPinchCenter = { x: centerX, y: centerY };
+      } else {
+        const scale = distance / initialPinchDistance;
+        const newZoom = Math.max(0.1, Math.min(10, initialPinchZoom * scale));
+        const delta = Math.log(newZoom / viewport.zoom);
+        const panDeltaX = centerX - lastPinchCenter.x;
+        const panDeltaY = centerY - lastPinchCenter.y;
+        const canvasRect = canvas.getBoundingClientRect();
+        const zoomedViewport = calculateZoomViewport(viewport, delta, canvas.width, canvas.height, centerX, centerY, canvasRect);
+        onViewportChange({ zoom: zoomedViewport.zoom, offsetX: zoomedViewport.offsetX + panDeltaX, offsetY: zoomedViewport.offsetY + panDeltaY });
+        lastPinchCenter = { x: centerX, y: centerY };
+      }
+      return;
+    }
+
+    // Single finger after two-finger gesture: pan
+    if (event.touches.length === 1 && isTwoFingerTouch && onViewportChange && canvas && image) {
+      event.preventDefault();
+      const touch = event.touches[0];
+      const deltaX = touch.clientX - lastPanPosition.x;
+      const deltaY = touch.clientY - lastPanPosition.y;
+      const result = calculatePanOffset(viewport, deltaX, deltaY, image.width, image.height, canvas.width, canvas.height, cropArea);
+      onViewportChange(result);
+      lastPanPosition = { x: touch.clientX, y: touch.clientY };
+      return;
+    }
+
+    // Single finger: normal tool operation
+    if (event.touches.length === 1 && !isTwoFingerTouch) {
+      handleMouseMove(event);
+    }
+  }
 
   function handleTouchEnd(event: TouchEvent) {
     if (event.touches.length === 0) {
+      if (isTwoFingerTouch) {
+        isTwoFingerTouch = false;
+        initialPinchDistance = 0;
+      }
       handleMouseUp();
+    } else if (event.touches.length === 1 && isTwoFingerTouch) {
+      // Transition from 2→1 finger: enable pan with remaining finger
+      lastPanPosition = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+      initialPinchDistance = 0;
     }
   }
 </script>

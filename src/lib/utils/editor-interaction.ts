@@ -32,6 +32,7 @@ export interface EditorInteractionState {
   lastPanPosition: { x: number; y: number };
   initialPinchDistance: number;
   initialPinchZoom: number;
+  lastPinchCenter: { x: number; y: number };
 
   // Space key / two-finger state (for drawing overlays)
   isSpaceHeld: boolean;
@@ -52,6 +53,7 @@ export function createEditorInteractionState(): EditorInteractionState {
     lastPanPosition: { x: 0, y: 0 },
     initialPinchDistance: 0,
     initialPinchZoom: 1,
+    lastPinchCenter: { x: 0, y: 0 },
     isSpaceHeld: false,
     isTwoFingerTouch: false,
     isDrawing: false,
@@ -246,7 +248,7 @@ export function handlePureTouchMove(
   ctx: EditorContext
 ): {
   state: EditorInteractionState;
-  viewportUpdate?: { offsetX: number; offsetY: number };
+  viewportUpdate?: { zoom?: number; offsetX: number; offsetY: number };
   zoomInfo?: { delta: number; centerX: number; centerY: number };
 } | null {
   if (!ctx.canvas || !ctx.image) return null;
@@ -282,6 +284,8 @@ export function handlePureTouchMove(
     const touch1 = event.touches[0];
     const touch2 = event.touches[1];
     const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+    const centerX = (touch1.clientX + touch2.clientX) / 2;
+    const centerY = (touch1.clientY + touch2.clientY) / 2;
 
     if (state.initialPinchDistance === 0) {
       return {
@@ -289,6 +293,7 @@ export function handlePureTouchMove(
           ...state,
           initialPinchDistance: distance,
           initialPinchZoom: ctx.viewport.zoom,
+          lastPinchCenter: { x: centerX, y: centerY },
           isPanning: false
         }
       };
@@ -296,13 +301,22 @@ export function handlePureTouchMove(
       const scale = distance / state.initialPinchDistance;
       const newZoom = Math.max(0.1, Math.min(10, state.initialPinchZoom * scale));
       const delta = Math.log(newZoom / ctx.viewport.zoom);
+      const panDeltaX = centerX - state.lastPinchCenter.x;
+      const panDeltaY = centerY - state.lastPinchCenter.y;
+
+      // Compute zoom-at-point then add pan offset
+      const canvasRect = ctx.canvas.getBoundingClientRect();
+      const zoomedViewport = calculateZoomViewport(ctx.viewport, delta, ctx.canvas.width, ctx.canvas.height, centerX, centerY, canvasRect);
 
       return {
-        state,
-        zoomInfo: {
-          delta,
-          centerX: (touch1.clientX + touch2.clientX) / 2,
-          centerY: (touch1.clientY + touch2.clientY) / 2
+        state: {
+          ...state,
+          lastPinchCenter: { x: centerX, y: centerY }
+        },
+        viewportUpdate: {
+          zoom: zoomedViewport.zoom,
+          offsetX: zoomedViewport.offsetX + panDeltaX,
+          offsetY: zoomedViewport.offsetY + panDeltaY
         }
       };
     }
@@ -678,38 +692,50 @@ export function handleOverlayTouchMove(
   strokeWidth: number
 ): {
   state: EditorInteractionState;
-  viewportUpdate?: { offsetX: number; offsetY: number };
+  viewportUpdate?: { zoom?: number; offsetX: number; offsetY: number };
   zoomInfo?: { delta: number; centerX: number; centerY: number };
 } | null {
   if (!ctx.canvas || !ctx.image) return null;
 
-  // Two-finger pinch zoom
+  // Two-finger pinch zoom + pan
   if (event.touches.length === 2 && state.isPanning) {
     event.preventDefault();
 
     const touch1 = event.touches[0];
     const touch2 = event.touches[1];
     const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+    const centerX = (touch1.clientX + touch2.clientX) / 2;
+    const centerY = (touch1.clientY + touch2.clientY) / 2;
 
     if (state.initialPinchDistance === 0) {
       return {
         state: {
           ...state,
           initialPinchDistance: distance,
-          initialPinchZoom: ctx.viewport.zoom
+          initialPinchZoom: ctx.viewport.zoom,
+          lastPinchCenter: { x: centerX, y: centerY }
         }
       };
     } else {
       const scale = distance / state.initialPinchDistance;
       const newZoom = Math.max(0.1, Math.min(10, state.initialPinchZoom * scale));
       const delta = Math.log(newZoom / ctx.viewport.zoom);
+      const panDeltaX = centerX - state.lastPinchCenter.x;
+      const panDeltaY = centerY - state.lastPinchCenter.y;
+
+      // Compute zoom-at-point then add pan offset
+      const canvasRect = ctx.canvas.getBoundingClientRect();
+      const zoomedViewport = calculateZoomViewport(ctx.viewport, delta, ctx.canvas.width, ctx.canvas.height, centerX, centerY, canvasRect);
 
       return {
-        state,
-        zoomInfo: {
-          delta,
-          centerX: (touch1.clientX + touch2.clientX) / 2,
-          centerY: (touch1.clientY + touch2.clientY) / 2
+        state: {
+          ...state,
+          lastPinchCenter: { x: centerX, y: centerY }
+        },
+        viewportUpdate: {
+          zoom: zoomedViewport.zoom,
+          offsetX: zoomedViewport.offsetX + panDeltaX,
+          offsetY: zoomedViewport.offsetY + panDeltaY
         }
       };
     }
@@ -717,7 +743,7 @@ export function handleOverlayTouchMove(
 
   // Single finger
   if (event.touches.length === 1) {
-    // Panning
+    // Panning (including after two-finger gesture)
     if (state.isPanning || shouldPan(state)) {
       event.preventDefault();
 
