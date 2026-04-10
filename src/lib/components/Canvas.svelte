@@ -14,6 +14,7 @@
     type EditorInteractionState,
     type EditorContext
   } from '../utils/editor-interaction';
+  import { haptic } from '../utils/haptics';
   import type { Viewport, TransformState, CropArea, AdjustmentsState, BlurArea, StampArea, Annotation } from '../types';
 
   interface Props {
@@ -64,6 +65,14 @@
 
   // Interaction state (using shared utility)
   let interactionState = $state<EditorInteractionState>(createEditorInteractionState());
+
+  // Double-tap zoom state
+  let lastTapTime = 0;
+  let lastTapX = 0;
+  let lastTapY = 0;
+  const DOUBLE_TAP_THRESHOLD_MS = 280;
+  const DOUBLE_TAP_DISTANCE = 30;
+  const DOUBLE_TAP_ZOOM_TARGET = 2.0;
 
   // Editor context for shared handlers
   let editorContext = $derived<EditorContext>({
@@ -225,7 +234,39 @@
   }
 
   function handleTouchStart(e: TouchEvent) {
+    // Detect double-tap on a single finger touch — toggle zoom in/out at the tap point.
+    if (e.touches.length === 1) {
+      const t = e.touches[0];
+      const now = performance.now();
+      const dx = t.clientX - lastTapX;
+      const dy = t.clientY - lastTapY;
+      const distSq = dx * dx + dy * dy;
+      if (
+        now - lastTapTime < DOUBLE_TAP_THRESHOLD_MS &&
+        distSq < DOUBLE_TAP_DISTANCE * DOUBLE_TAP_DISTANCE
+      ) {
+        e.preventDefault();
+        const targetZoom = viewport.zoom > 1.05 ? 1 : DOUBLE_TAP_ZOOM_TARGET;
+        const delta = targetZoom - viewport.zoom;
+        if (onZoom) onZoom(delta, t.clientX, t.clientY);
+        haptic('medium');
+        lastTapTime = 0;
+        return;
+      }
+      lastTapTime = now;
+      lastTapX = t.clientX;
+      lastTapY = t.clientY;
+    }
     interactionState = handlePureTouchStart(e, interactionState, viewport);
+  }
+
+  // Double-click on desktop should also toggle zoom for consistency
+  function handleDoubleClick(e: MouseEvent) {
+    if (!onZoom || !canvasElement) return;
+    e.preventDefault();
+    const targetZoom = viewport.zoom > 1.05 ? 1 : DOUBLE_TAP_ZOOM_TARGET;
+    const delta = targetZoom - viewport.zoom;
+    onZoom(delta, e.clientX, e.clientY);
   }
 
   function handleTouchMove(e: TouchEvent) {
@@ -252,6 +293,7 @@
     class:panning={interactionState.isPanning}
     style="max-width: 100%; max-height: {height}px;"
     onmousedown={handleMouseDown}
+    ondblclick={handleDoubleClick}
   ></canvas>
 
   {#if useWebGPU}
@@ -269,10 +311,60 @@
 </div>
 
 <style lang="postcss">
-  .canvas-container { position: relative; display: inline-block; }
-  .editor-canvas { display: block; background: #000; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
-  .editor-canvas.panning { cursor: grabbing; }
-  .overlay-canvas { position: absolute; top: 0; left: 0; display: block; pointer-events: none; }
-  .gpu-indicator { position: absolute; top: 10px; right: 10px; pointer-events: none; z-index: 10; }
-  .gpu-badge { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600; letter-spacing: 0.5px; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3); text-transform: uppercase; }
+  .canvas-container {
+    position: relative;
+    display: inline-block;
+  }
+  .editor-canvas {
+    display: block;
+    background: transparent;
+    cursor: grab;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    border-radius: var(--tk-radius-lg, 12px);
+    box-shadow: 0 24px 64px -16px rgba(0, 0, 0, 0.7);
+  }
+  .editor-canvas.panning {
+    cursor: grabbing;
+  }
+  .overlay-canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: block;
+    pointer-events: none;
+    border-radius: var(--tk-radius-lg, 12px);
+  }
+  .gpu-indicator {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .gpu-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: rgba(255, 255, 255, 0.8);
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+  .gpu-badge::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: #30d158;
+    box-shadow: 0 0 6px rgba(48, 209, 88, 0.6);
+  }
 </style>

@@ -1,0 +1,206 @@
+/**
+ * TOKIMEKI Image Editor — Design Tokens
+ *
+ * iOS Photos / Lightroom Mobile inspired dark UI.
+ * All UI surface values flow from this file.
+ */
+
+:where(.tokimeki-editor) {
+  /* ──────────────────────────────────────────────
+   *  Color — surfaces (warm-cool dark grays)
+   * ────────────────────────────────────────────── */
+  --tk-bg-base: #0b0b0d;
+  --tk-bg-canvas: #050507;
+  --tk-bg-elevated: #161619;
+  --tk-bg-overlay: #1f1f24;
+  --tk-bg-glass: rgba(22, 22, 26, 0.72);
+  --tk-bg-glass-strong: rgba(16, 16, 20, 0.88);
+
+  --tk-surface-1: #1c1c20;
+  --tk-surface-2: #26262c;
+  --tk-surface-3: #32323a;
+  --tk-surface-hover: #2e2e36;
+  --tk-surface-active: #3a3a44;
+  --tk-surface-inset: #101013;
+
+  /* Color — text */
+  --tk-text-primary: #f5f5f7;
+  --tk-text-secondary: #b8b8be;
+  --tk-text-tertiary: #76767d;
+  --tk-text-disabled: #4a4a52;
+  --tk-text-on-accent: #ffffff;
+
+  /* Color — borders & dividers */
+  --tk-border-subtle: rgba(255, 255, 255, 0.06);
+  --tk-border-default: rgba(255, 255, 255, 0.1);
+  --tk-border-strong: rgba(255, 255, 255, 0.18);
+  --tk-border-accent: var(--tk-accent);
+  --tk-divider: rgba(255, 255, 255, 0.08);
+
+  /* Color — accent (Lightroom blue) */
+  --tk-accent: #0a84ff;
+  --tk-accent-hover: #409cff;
+  --tk-accent-pressed: #0066cc;
+  --tk-accent-soft: rgba(10, 132, 255, 0.16);
+  --tk-accent-glow: 0 0 0 4px rgba(10, 132, 255, 0.18);
+
+  /* Color — semantic */
+  --tk-success: #30d158;
+  --tk-warning: #ff9f0a;
+  --tk-danger: #ff453a;
+  --tk-danger-hover: #ff6961;
+  --tk-danger-soft: rgba(255, 69, 58, 0.14);
+
+  /* ──────────────────────────────────────────────
+   *  Spacing — 4px base modular scale
+   * ────────────────────────────────────────────── */
+  --tk-space-0: 0;
+  --tk-space-1: 4px;
+  --tk-space-2: 8px;
+  --tk-space-3: 12px;
+  --tk-space-4: 16px;
+  --tk-space-5: 20px;
+  --tk-space-6: 24px;
+  --tk-space-7: 28px;
+  --tk-space-8: 32px;
+  --tk-space-10: 40px;
+  --tk-space-12: 48px;
+  --tk-space-16: 64px;
+  --tk-space-20: 80px;
+
+  /* ──────────────────────────────────────────────
+   *  Radius
+   * ────────────────────────────────────────────── */
+  --tk-radius-xs: 4px;
+  --tk-radius-sm: 8px;
+  --tk-radius-md: 12px;
+  --tk-radius-lg: 16px;
+  --tk-radius-xl: 20px;
+  --tk-radius-2xl: 24px;
+  --tk-radius-3xl: 32px;
+  --tk-radius-full: 9999px;
+
+  /* ──────────────────────────────────────────────
+   *  Typography
+   * ────────────────────────────────────────────── */
+  --tk-font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text',
+    'Hiragino Sans', 'Yu Gothic UI', 'Segoe UI', Roboto, sans-serif;
+  --tk-font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --tk-text-2xs: 10px;
+  --tk-text-xs: 11px;
+  --tk-text-sm: 12px;
+  --tk-text-base: 13px;
+  --tk-text-md: 15px;
+  --tk-text-lg: 17px;
+  --tk-text-xl: 22px;
+  --tk-text-2xl: 28px;
+  --tk-text-3xl: 34px;
+  --tk-text-4xl: 44px;
+
+  --tk-leading-tight: 1.2;
+  --tk-leading-snug: 1.35;
+  --tk-leading-normal: 1.5;
+  --tk-leading-relaxed: 1.625;
+
+  --tk-tracking-tight: -0.02em;
+  --tk-tracking-normal: 0;
+  --tk-tracking-wide: 0.04em;
+  --tk-tracking-wider: 0.08em;
+
+  --tk-weight-regular: 400;
+  --tk-weight-medium: 500;
+  --tk-weight-semibold: 600;
+  --tk-weight-bold: 700;
+
+  /* ──────────────────────────────────────────────
+   *  Shadow / elevation
+   * ────────────────────────────────────────────── */
+  --tk-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --tk-shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.32);
+  --tk-shadow-md: 0 6px 16px rgba(0, 0, 0, 0.36);
+  --tk-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.42);
+  --tk-shadow-xl: 0 24px 60px rgba(0, 0, 0, 0.5);
+  --tk-shadow-glass:
+    0 24px 60px -12px rgba(0, 0, 0, 0.72),
+    0 1px 0 rgba(255, 255, 255, 0.06) inset,
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+  --tk-ring-focus: 0 0 0 3px rgba(10, 132, 255, 0.32);
+
+  /* ──────────────────────────────────────────────
+   *  Motion
+   * ────────────────────────────────────────────── */
+  --tk-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --tk-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --tk-ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --tk-ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  --tk-dur-instant: 80ms;
+  --tk-dur-quick: 140ms;
+  --tk-dur-medium: 220ms;
+  --tk-dur-long: 320ms;
+  --tk-dur-slow: 480ms;
+
+  /* ──────────────────────────────────────────────
+   *  Z-index scale
+   * ────────────────────────────────────────────── */
+  --tk-z-base: 1;
+  --tk-z-raised: 10;
+  --tk-z-overlay: 100;
+  --tk-z-dock: 200;
+  --tk-z-sheet: 300;
+  --tk-z-toast: 400;
+  --tk-z-modal: 500;
+  --tk-z-tooltip: 600;
+
+  /* ──────────────────────────────────────────────
+   *  Touch & sizing
+   * ────────────────────────────────────────────── */
+  --tk-touch-min: 44px;
+  --tk-touch-default: 48px;
+  --tk-touch-large: 56px;
+
+  --tk-control-sm: 32px;
+  --tk-control-md: 40px;
+  --tk-control-lg: 48px;
+
+  /* Glass blur intensities */
+  --tk-blur-sm: blur(12px) saturate(140%);
+  --tk-blur-md: blur(24px) saturate(160%);
+  --tk-blur-lg: blur(40px) saturate(180%);
+
+  /* Backwards-compat alias used by older callers */
+  --primary-color: var(--tk-accent);
+}
+
+/* When the editor is the page-level root we still want tokens available */
+:where(html, body):has(.tokimeki-editor) {
+  color-scheme: dark;
+}
+
+/* Reset patterns inside the editor */
+.tokimeki-editor *,
+.tokimeki-editor *::before,
+.tokimeki-editor *::after {
+  box-sizing: border-box;
+}
+
+.tokimeki-editor button {
+  font-family: inherit;
+}
+
+.tokimeki-editor :focus-visible {
+  outline: none;
+  box-shadow: var(--tk-ring-focus);
+}
+
+/* Reduced motion respect */
+@media (prefers-reduced-motion: reduce) {
+  :where(.tokimeki-editor) {
+    --tk-dur-instant: 0ms;
+    --tk-dur-quick: 0ms;
+    --tk-dur-medium: 0ms;
+    --tk-dur-long: 0ms;
+    --tk-dur-slow: 0ms;
+  }
+}

@@ -29,7 +29,10 @@
     "noImage": "No image loaded",
     "undo": "Undo",
     "redo": "Redo",
-    "selectStamp": "Select Stamp"
+    "selectStamp": "Select Stamp",
+    "acceptedFormats": "PNG · JPEG · WebP",
+    "doubleTapHint": "Double-tap to zoom · pinch to scale",
+    "openImage": "Open image"
   },
   "toolbar": {
     "crop": "Crop Tool",

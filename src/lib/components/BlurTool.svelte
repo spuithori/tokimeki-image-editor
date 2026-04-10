@@ -1,9 +1,29 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
+  import { X, Trash2, Droplet, Info } from 'lucide-svelte';
   import type { BlurArea, Viewport, TransformState, CropArea } from '../types';
   import { screenToImageCoords, imageToCanvasCoords } from '../utils/canvas';
-  import ToolPanel from './ToolPanel.svelte';
+  import FloatingRail from './FloatingRail.svelte';
+  import RailButton from './RailButton.svelte';
+  import Popover from './Popover.svelte';
+  import Slider from './Slider.svelte';
+  import { haptic } from '../utils/haptics';
+
+  // Popover state for blur-strength control
+  let strengthPopoverOpen = $state(false);
+  let strengthAnchor = $state<HTMLElement | null>(null);
+  let hintPopoverOpen = $state(false);
+  let hintAnchor = $state<HTMLElement | null>(null);
+
+  function toggleStrengthPopover() {
+    strengthPopoverOpen = !strengthPopoverOpen;
+    hintPopoverOpen = false;
+  }
+  function toggleHintPopover() {
+    hintPopoverOpen = !hintPopoverOpen;
+    strengthPopoverOpen = false;
+  }
 
   interface Props {
     canvas: HTMLCanvasElement | null;
@@ -415,10 +435,10 @@
         y={creatingRect.y}
         width={creatingRect.width}
         height={creatingRect.height}
-        fill="rgba(100, 150, 255, 0.2)"
-        stroke="rgba(100, 150, 255, 0.8)"
+        fill="rgba(10, 132, 255, 0.18)"
+        stroke="#0a84ff"
         stroke-width="2"
-        stroke-dasharray="5,5"
+        stroke-dasharray="6,4"
       />
     {/if}
 
@@ -433,10 +453,10 @@
           y={area.canvasY}
           width={area.canvasWidth}
           height={area.canvasHeight}
-          fill={isSelected ? "rgba(100, 150, 255, 0.15)" : "rgba(255, 255, 255, 0.1)"}
-          stroke={isSelected ? "rgba(100, 150, 255, 0.9)" : "rgba(255, 255, 255, 0.5)"}
-          stroke-width={isSelected ? "3" : "2"}
-          stroke-dasharray="5,5"
+          fill={isSelected ? "rgba(10, 132, 255, 0.12)" : "rgba(255, 255, 255, 0.06)"}
+          stroke={isSelected ? "#0a84ff" : "rgba(255, 255, 255, 0.6)"}
+          stroke-width={isSelected ? "2.5" : "1.5"}
+          stroke-dasharray={isSelected ? "0" : "6,4"}
           onmousedown={(e) => handleAreaMouseDown(e, area.id)}
           ontouchstart={(e) => handleAreaMouseDown(e, area.id)}
           style="cursor: move;"
@@ -445,7 +465,7 @@
         <!-- Resize handles (only for selected area) -->
         {#if isSelected}
           {#each ['nw', 'n', 'ne', 'w', 'e', 'sw', 's', 'se'] as handle}
-            {@const handleSize = 10}
+            {@const handleSize = 22}
             {@const handleX = handle.includes('w') ? area.canvasX - handleSize/2
                             : handle.includes('e') ? area.canvasX + area.canvasWidth - handleSize/2
                             : area.canvasX + area.canvasWidth/2 - handleSize/2}
@@ -457,17 +477,16 @@
                            : handle === 'nw' || handle === 'se' ? 'nwse-resize'
                            : 'nesw-resize'}
 
-            <rect
-              x={handleX}
-              y={handleY}
-              width={handleSize}
-              height={handleSize}
-              fill="rgba(100, 150, 255, 0.9)"
-              stroke="#fff"
-              stroke-width="2"
+            <circle
+              cx={handleX + handleSize / 2}
+              cy={handleY + handleSize / 2}
+              r={handleSize / 2}
+              fill="#fff"
+              stroke="#0a84ff"
+              stroke-width="3"
               onmousedown={(e) => handleHandleMouseDown(e, area.id, handle)}
               ontouchstart={(e) => handleHandleMouseDown(e, area.id, handle)}
-              style="cursor: {cursor};"
+              style="cursor: {cursor}; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.3));"
             />
           {/each}
         {/if}
@@ -476,49 +495,97 @@
   </svg>
 </div>
 
-<!-- Control panel -->
-<ToolPanel title={$_('editor.blur')} {onClose}>
+<!-- Floating tool rail -->
+<FloatingRail side="right">
+  {#snippet top()}
+    <RailButton label={$_('editor.close')} variant="default" haptics="light" onclick={onClose}>
+      <X size={20} strokeWidth={2.2} />
+    </RailButton>
+  {/snippet}
+
+  {#snippet children()}
+    <button
+      bind:this={strengthAnchor}
+      type="button"
+      class="rail-color-trigger"
+      class:open={strengthPopoverOpen}
+      class:disabled={!selectedArea}
+      aria-label={$_('blur.strength')}
+      title={$_('blur.strength')}
+      disabled={!selectedArea}
+      onclick={toggleStrengthPopover}
+    >
+      <Droplet size={20} strokeWidth={1.8} />
+    </button>
+
+    <button
+      bind:this={hintAnchor}
+      type="button"
+      class="rail-color-trigger"
+      class:open={hintPopoverOpen}
+      aria-label="Help"
+      title="Help"
+      onclick={toggleHintPopover}
+    >
+      <Info size={18} strokeWidth={1.8} />
+    </button>
+  {/snippet}
+
+  {#snippet bottom()}
+    <RailButton
+      label={$_('editor.delete')}
+      variant="danger"
+      disabled={!selectedArea}
+      haptics="warning"
+      onclick={handleDeleteArea}
+    >
+      <Trash2 size={18} strokeWidth={1.8} />
+    </RailButton>
+  {/snippet}
+</FloatingRail>
+
+<Popover open={strengthPopoverOpen && !!selectedArea} onClose={() => (strengthPopoverOpen = false)} side="left" anchor={strengthAnchor}>
   {#snippet children()}
     {#if selectedArea}
-      <div class="control-group">
-        <label for="blur-strength">
-          <span>{$_('blur.strength')}</span>
-          <span class="value">{selectedArea.blurStrength}</span>
-        </label>
-        <input
-          id="blur-strength"
-          type="range"
-          min="0"
-          max="100"
-          value={selectedArea.blurStrength}
-          oninput={(e) => handleBlurStrengthChange(Number(e.currentTarget.value))}
-        />
-      </div>
-    {:else}
-      <div class="panel-hint">
-        <p>{$_('blur.hint')}</p>
-      </div>
+      <Slider
+        label={$_('blur.strength')}
+        value={selectedArea.blurStrength}
+        min={0}
+        max={100}
+        suffix="%"
+        onInput={handleBlurStrengthChange}
+      />
     {/if}
   {/snippet}
+</Popover>
 
-  {#snippet actions()}
-    {#if selectedArea}
-      <button class="btn btn-danger" onclick={handleDeleteArea}>
-        {$_('editor.delete')}
-      </button>
-    {/if}
+<Popover open={hintPopoverOpen} onClose={() => (hintPopoverOpen = false)} side="left" anchor={hintAnchor}>
+  {#snippet children()}
+    <p class="popover-hint">{$_('blur.hint')}</p>
   {/snippet}
-</ToolPanel>
+</Popover>
 
 <style lang="postcss">
+  :global(.popover-hint) {
+    margin: 0;
+    font-size: var(--tk-text-sm);
+    line-height: var(--tk-leading-snug);
+    color: var(--tk-text-secondary);
+    max-width: 240px;
+  }
+
+  :global(.rail-color-trigger.disabled) {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
   .blur-tool-overlay {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     cursor: crosshair;
     user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
   }
 
   .blur-tool-svg {
@@ -527,103 +594,50 @@
     pointer-events: none;
   }
 
-  .blur-tool-svg rect {
+  .blur-tool-svg rect,
+  .blur-tool-svg circle {
     pointer-events: all;
   }
 
-  .control-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-
-  .control-group label {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-size: 0.9rem;
-    color: #ccc;
-  }
-
-  .control-group .value {
-    color: var(--primary-color, #63b97b);
-    font-weight: 600;
-  }
-
-  .control-group input[type='range'] {
-    width: 100%;
-    height: 6px;
-    background: #444;
-    border-radius: 3px;
-    outline: none;
-    cursor: pointer;
-  }
-
-  .control-group input[type='range']::-webkit-slider-thumb {
-    appearance: none;
-    width: 16px;
-    height: 16px;
-    background: var(--primary-color, #63b97b);
-    border-radius: 50%;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .control-group input[type='range']::-webkit-slider-thumb:hover {
-    background: var(--primary-color, #63b97b);
-    transform: scale(1.1);
-  }
-
-  .control-group input[type='range']::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    background: var(--primary-color, #63b97b);
-    border: none;
-    border-radius: 50%;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .control-group input[type='range']::-moz-range-thumb:hover {
-    background: var(--primary-color, #63b97b);
-    transform: scale(1.1);
-  }
-
-  .btn {
-    padding: 0.5rem 1rem;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-    font-size: 0.9rem;
-    transition: all 0.2s;
-  }
-
-  .btn-danger {
-    background: #cc3333;
-    color: #fff;
-  }
-
-  .btn-danger:hover {
-    background: #dd4444;
-  }
-
   .panel-hint {
-    padding: 1rem;
-    background: #2a2a2a;
-    border-radius: 4px;
-    color: #999;
-    font-size: 0.9rem;
+    padding: var(--tk-space-3) var(--tk-space-4);
+    background: var(--tk-surface-1);
+    border-radius: var(--tk-radius-md);
+    color: var(--tk-text-secondary);
+    font-size: var(--tk-text-sm);
+    line-height: var(--tk-leading-snug);
   }
 
   .panel-hint p {
     margin: 0;
   }
 
-  @media (max-width: 767px) {
-    .blur-tool-svg rect[fill="rgba(100, 150, 255, 0.9)"] {
-      width: 20px !important;
-      height: 20px !important;
-      stroke-width: 3 !important;
-    }
+  .btn {
+    appearance: none;
+    border: none;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--tk-text-sm);
+    font-weight: var(--tk-weight-semibold);
+    padding: 0 var(--tk-space-4);
+    height: var(--tk-touch-min);
+    border-radius: var(--tk-radius-full);
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+  }
+
+  .btn-danger {
+    background: var(--tk-danger-soft);
+    color: var(--tk-danger);
+  }
+
+  .btn-danger:hover {
+    background: var(--tk-danger);
+    color: var(--tk-text-on-accent);
+  }
+  .btn-danger:active {
+    transform: scale(0.96);
   }
 </style>

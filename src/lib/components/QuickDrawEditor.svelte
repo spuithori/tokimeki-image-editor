@@ -30,6 +30,7 @@
   import Canvas from './Canvas.svelte';
   import { Pencil, Brush, PaintBucket } from 'lucide-svelte';
   import { initWasm } from '../wasm/stroke-processor';
+  import { haptic } from '../utils/haptics';
 
   interface Props {
     width?: number;
@@ -242,11 +243,25 @@
   async function handlePost() {
     const result = await exportQuickDraw(state);
     if (!result) return;
+    haptic('success');
     onComplete(result.dataUrl, { blob: result.blob, width: result.width, height: result.height });
   }
 
   function handleUndo() {
+    haptic('light');
     state = quickDrawUndo(state);
+  }
+
+  function selectTool(tool: 'pen' | 'brush' | 'fill') {
+    if (currentTool === tool) return;
+    haptic('selection');
+    currentTool = tool;
+  }
+
+  function selectColor(color: string) {
+    haptic('selection');
+    currentColor = color;
+    showColorPopup = false;
   }
 
   function handleClickOutside(event: MouseEvent) {
@@ -360,9 +375,9 @@
 
   <div class="toolbar">
     <div class="tool-group">
-      <button class="tool-btn" class:active={currentTool === 'pen'} onclick={() => currentTool = 'pen'} title="Pen"><Pencil size={18} /></button>
-      <button class="tool-btn" class:active={currentTool === 'brush'} onclick={() => currentTool = 'brush'} title="Brush"><Brush size={18} /></button>
-      <button class="tool-btn" class:active={currentTool === 'fill'} onclick={() => currentTool = 'fill'} title="Fill"><PaintBucket size={18} /></button>
+      <button class="tool-btn" class:active={currentTool === 'pen'} onclick={() => selectTool('pen')} title="Pen" aria-label="Pen tool" aria-pressed={currentTool === 'pen'}><Pencil size={18} strokeWidth={2.2} /></button>
+      <button class="tool-btn" class:active={currentTool === 'brush'} onclick={() => selectTool('brush')} title="Brush" aria-label="Brush tool" aria-pressed={currentTool === 'brush'}><Brush size={18} strokeWidth={2.2} /></button>
+      <button class="tool-btn" class:active={currentTool === 'fill'} onclick={() => selectTool('fill')} title="Fill" aria-label="Fill tool" aria-pressed={currentTool === 'fill'}><PaintBucket size={18} strokeWidth={2.2} /></button>
     </div>
     <div class="stroke-control">
       <button
@@ -401,8 +416,10 @@
                 class="color-btn"
                 class:active={currentColor === color}
                 style="background-color: {color}"
-                onclick={() => { currentColor = color; showColorPopup = false; }}
+                onclick={() => selectColor(color)}
                 title={color}
+                aria-label={`Color ${color}`}
+                aria-pressed={currentColor === color}
               ></button>
             {/each}
           </div>
@@ -500,42 +517,57 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        gap: 8px;
-        padding: 8px 12px;
+        gap: 6px;
+        padding: 8px 10px;
         background: white;
-        border-radius: 12px;
-        box-shadow: 0 2px 12px rgba(0, 0, 0, 0.1);
+        border-radius: 16px;
+        box-shadow: 0 8px 24px -8px rgba(15, 23, 42, 0.18),
+            0 0 0 1px rgba(15, 23, 42, 0.04);
         width: 100%;
         box-sizing: border-box;
+        -webkit-tap-highlight-color: transparent;
     }
 
     .tool-group {
         display: flex;
-        gap: 4px;
+        gap: 2px;
+        padding: 2px;
+        background: #f1f5f9;
+        border-radius: 12px;
     }
 
     .tool-btn {
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 32px;
-        height: 32px;
+        width: 40px;
+        height: 40px;
         border: none;
-        border-radius: 8px;
+        border-radius: 10px;
         background: transparent;
         color: #64748b;
         cursor: pointer;
-        transition: all 0.15s;
+        transition:
+            background 140ms cubic-bezier(0.16, 1, 0.3, 1),
+            color 140ms cubic-bezier(0.16, 1, 0.3, 1),
+            transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+        -webkit-tap-highlight-color: transparent;
     }
 
     .tool-btn:hover {
-        background: #f1f5f9;
+        background: #e2e8f0;
         color: #334155;
     }
 
+    .tool-btn:active {
+        transform: scale(0.92);
+    }
+
     .tool-btn.active {
-        background: #e0e7ff;
+        background: white;
         color: #4f46e5;
+        box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12),
+            0 0 0 1px rgba(15, 23, 42, 0.04);
     }
 
     .stroke-control {
@@ -546,13 +578,19 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 32px;
-        height: 32px;
+        width: 40px;
+        height: 40px;
         border: none;
-        border-radius: 8px;
+        border-radius: 12px;
         background: #f1f5f9;
         cursor: pointer;
-        transition: all 0.15s;
+        transition:
+            background 140ms cubic-bezier(0.16, 1, 0.3, 1),
+            transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+        -webkit-tap-highlight-color: transparent;
+    }
+    .stroke-trigger:active {
+        transform: scale(0.92);
     }
 
     .stroke-trigger:hover {
@@ -631,25 +669,32 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 32px;
-        height: 32px;
+        width: 40px;
+        height: 40px;
         border: none;
-        border-radius: 8px;
+        border-radius: 12px;
         background: #f1f5f9;
         cursor: pointer;
-        transition: all 0.15s;
+        transition:
+            background 140ms cubic-bezier(0.16, 1, 0.3, 1),
+            transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+        -webkit-tap-highlight-color: transparent;
     }
 
     .color-trigger:hover {
         background: #e2e8f0;
     }
+    .color-trigger:active {
+        transform: scale(0.92);
+    }
 
     .color-indicator {
-        width: 18px;
-        height: 18px;
-        border-radius: 50%;
+        width: 22px;
+        height: 22px;
+        border-radius: 999px;
         border: 2px solid white;
-        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.1);
+        box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12),
+            0 1px 3px rgba(0, 0, 0, 0.18);
     }
 
     .color-popup {
@@ -674,21 +719,29 @@
     }
 
     .color-btn {
-        width: 24px;
-        height: 24px;
+        width: 32px;
+        height: 32px;
         border: 2px solid transparent;
-        border-radius: 50%;
+        border-radius: 999px;
         cursor: pointer;
-        transition: all 0.15s;
+        transition:
+            transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1),
+            box-shadow 140ms cubic-bezier(0.16, 1, 0.3, 1);
+        -webkit-tap-highlight-color: transparent;
+        box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.1),
+            0 1px 2px rgba(15, 23, 42, 0.12);
     }
 
     .color-btn:hover {
-        transform: scale(1.1);
+        transform: scale(1.08);
+    }
+    .color-btn:active {
+        transform: scale(0.92);
     }
 
     .color-btn.active {
-        border-color: #1e293b;
-        box-shadow: 0 0 0 2px white, 0 0 0 4px currentColor;
+        box-shadow: 0 0 0 2px white, 0 0 0 4px #4f46e5;
+        transform: scale(1.04);
     }
 
     .color-picker-input {
@@ -720,46 +773,62 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        width: 32px;
-        height: 32px;
+        width: 40px;
+        height: 40px;
         border: none;
-        border-radius: 8px;
+        border-radius: 12px;
         background: #f1f5f9;
         color: #64748b;
         cursor: pointer;
-        transition: all 0.15s;
+        transition:
+            background 140ms cubic-bezier(0.16, 1, 0.3, 1),
+            color 140ms cubic-bezier(0.16, 1, 0.3, 1),
+            transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1);
+        -webkit-tap-highlight-color: transparent;
     }
 
     .undo-btn:hover:not(:disabled) {
         background: #e2e8f0;
         color: #334155;
     }
+    .undo-btn:active:not(:disabled) {
+        transform: scale(0.92);
+    }
 
     .undo-btn:disabled {
-        opacity: 0.4;
+        opacity: 0.35;
         cursor: not-allowed;
     }
 
     .post-btn {
-        width: 32px;
-        height: 32px;
+        width: 44px;
+        height: 44px;
         display: grid;
         place-content: center;
         border: none;
-        border-radius: 50%;
-        background: var(--primary-color, #000);
+        border-radius: 999px;
+        background: var(--primary-color, #4f46e5);
         color: white;
         cursor: pointer;
-        transition: all 0.15s;
+        box-shadow: 0 4px 14px rgba(79, 70, 229, 0.36);
+        transition:
+            transform 140ms cubic-bezier(0.34, 1.56, 0.64, 1),
+            box-shadow 140ms cubic-bezier(0.16, 1, 0.3, 1),
+            background 140ms cubic-bezier(0.16, 1, 0.3, 1);
+        -webkit-tap-highlight-color: transparent;
     }
 
     .post-btn:hover:not(:disabled) {
         transform: translateY(-1px);
-        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+        box-shadow: 0 6px 20px rgba(79, 70, 229, 0.5);
+    }
+    .post-btn:active:not(:disabled) {
+        transform: translateY(0) scale(0.94);
     }
 
     .post-btn:disabled {
-        opacity: 0.5;
+        opacity: 0.4;
         cursor: not-allowed;
+        box-shadow: none;
     }
 </style>

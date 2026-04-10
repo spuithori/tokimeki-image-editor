@@ -1,22 +1,132 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
-  import { RotateCw, RotateCcw, FlipHorizontal, FlipVertical } from 'lucide-svelte';
+  import {
+    RotateCw,
+    RotateCcw,
+    FlipHorizontal,
+    FlipVertical,
+    X,
+    Check,
+    Crop as CropIcon,
+    Lock,
+    Unlock,
+    Repeat2,
+    RotateCcwSquare,
+    Maximize2
+  } from 'lucide-svelte';
   import type { CropArea, Viewport, TransformState } from '../types';
   import { screenToImageCoords, imageToCanvasCoords } from '../utils/canvas';
+  import FloatingRail from './FloatingRail.svelte';
+  import RailButton from './RailButton.svelte';
+  import Popover from './Popover.svelte';
+  import { haptic } from '../utils/haptics';
+
+  // Aspect lock — when true, resizing maintains the locked ratio.
+  let aspectLocked = $state(false);
+  let lockedAspectRatio = $state<number | null>(null);
+
+  let aspectPopoverOpen = $state(false);
+  let aspectAnchor = $state<HTMLElement | null>(null);
+  function toggleAspectPopover() {
+    aspectPopoverOpen = !aspectPopoverOpen;
+  }
+
+  // ratio === null → free aspect
+  function chooseAspect(ratio: number | null) {
+    haptic('selection');
+    if (ratio === null) {
+      aspectLocked = false;
+      lockedAspectRatio = null;
+    } else {
+      setAspectRatio(ratio);
+      aspectLocked = true;
+      lockedAspectRatio = ratio;
+    }
+    aspectPopoverOpen = false;
+  }
+
+  function toggleAspectLock() {
+    if (aspectLocked) {
+      aspectLocked = false;
+      lockedAspectRatio = null;
+    } else {
+      aspectLocked = true;
+      lockedAspectRatio = cropArea.width / cropArea.height;
+    }
+    haptic('selection');
+  }
+
+  function swapOrientation() {
+    if (!image) return;
+    const newWidth = Math.min(cropArea.height, image.width);
+    const newHeight = Math.min(cropArea.width, image.height);
+    cropArea = {
+      x: Math.max(0, Math.min(image.width - newWidth, cropArea.x + (cropArea.width - newWidth) / 2)),
+      y: Math.max(0, Math.min(image.height - newHeight, cropArea.y + (cropArea.height - newHeight) / 2)),
+      width: newWidth,
+      height: newHeight
+    };
+    if (lockedAspectRatio !== null) {
+      lockedAspectRatio = 1 / lockedAspectRatio;
+    }
+    haptic('selection');
+  }
+
+  function resetCrop() {
+    if (!image) return;
+    cropArea = { x: 0, y: 0, width: image.width, height: image.height };
+    aspectLocked = false;
+    lockedAspectRatio = null;
+    haptic('warning');
+  }
+
+  // Display helpers
+  let displayWidth = $derived(Math.round(cropArea.width));
+  let displayHeight = $derived(Math.round(cropArea.height));
+  let displayRatio = $derived.by(() => {
+    const r = cropArea.width / cropArea.height;
+    const presets: [number, string][] = [
+      [1, '1:1'],
+      [4 / 5, '4:5'],
+      [5 / 4, '5:4'],
+      [4 / 3, '4:3'],
+      [3 / 4, '3:4'],
+      [3 / 2, '3:2'],
+      [2 / 3, '2:3'],
+      [16 / 9, '16:9'],
+      [9 / 16, '9:16']
+    ];
+    for (const [ratio, label] of presets) {
+      if (Math.abs(r - ratio) < 0.01) return label;
+    }
+    return null;
+  });
 
   interface Props {
     canvas: HTMLCanvasElement | null;
     image: HTMLImageElement | null;
     viewport: Viewport;
     transform: TransformState;
+    /** Previously-applied crop to seed the frame with (null = start from full image) */
+    seedCropArea?: CropArea | null;
     onApply: (cropArea: CropArea) => void;
     onCancel: () => void;
     onViewportChange?: (viewport: Partial<Viewport>) => void;
     onTransformChange?: (transform: Partial<TransformState>) => void;
   }
 
-  let { canvas, image, viewport, transform, onApply, onCancel, onViewportChange, onTransformChange }: Props = $props();
+  let {
+    canvas,
+    image,
+    viewport,
+    transform,
+    seedCropArea = null,
+    onApply,
+    onCancel,
+    onViewportChange,
+    onTransformChange
+  }: Props = $props();
 
   let containerElement = $state<HTMLDivElement | null>(null);
 
@@ -34,13 +144,24 @@
   let resizeHandle = $state<string | null>(null);
   let initialCropArea = $state<CropArea | null>(null);
 
-  // Viewport panning state (for dragging outside crop area)
+  // Viewport panning state.
+  //   'frame'  — drag inside frame: image scrolls under stationary frame (iOS Photos)
+  //   'canvas' — drag outside frame: viewport itself moves (image + frame together)
   let isPanning = $state(false);
+  let panType = $state<'frame' | 'canvas'>('frame');
   let lastPanPosition = $state({ x: 0, y: 0 });
 
-  // Touch pinch zoom state
+  // Touch pinch zoom state — pinch now zooms the underlying image, not the crop area.
   let initialPinchDistance = $state(0);
-  let initialCropSize = $state<{ width: number; height: number } | null>(null);
+  let initialPinchZoom = $state(1);
+
+  // True when any drag-like interaction is in progress (used to brighten the grid)
+  let isInteracting = $derived(isResizing || isPanning);
+
+  // SVG render constants — placed up here, derived geometry placed after canvasCoords below
+  const cornerLen = 22;
+  const cornerThickness = 4;
+  const barThickness = 4;
 
   // Track if crop area has been initialized (non-reactive to prevent re-initialization)
   let cropAreaInitialized = false;
@@ -76,20 +197,25 @@
     };
   });
 
+  // Derived SVG values that depend on canvasCoords
+  let gridStroke = $derived(isInteracting ? 'rgba(255, 255, 255, 0.55)' : 'rgba(255, 255, 255, 0.22)');
+  let frameStrokeWidth = $derived(isInteracting ? 2 : 1.5);
+  let edgeBarLenH = $derived(canvasCoords ? Math.max(20, canvasCoords.width / 3) : 0);
+  let edgeBarLenV = $derived(canvasCoords ? Math.max(20, canvasCoords.height / 3) : 0);
+  let edgeOffsetX = $derived(canvasCoords ? (canvasCoords.width - edgeBarLenH) / 2 : 0);
+  let edgeOffsetY = $derived(canvasCoords ? (canvasCoords.height - edgeBarLenV) / 2 : 0);
+
   onMount(() => {
     if (containerElement) {
-      // Add mouse event listener with capture to handle panning before SVG handles
-      containerElement.addEventListener('mousedown', handleContainerMouseDownCapture as any, { capture: true });
-      // Add touch event listeners with passive: false to allow preventDefault
-      containerElement.addEventListener('touchstart', handleContainerTouchStartUnified as any, { passive: false, capture: true });
+      // Touch listeners need passive: false to allow preventDefault for pinch / drag
+      containerElement.addEventListener('touchstart', handleContainerTouchStartUnified as any, { passive: false });
       containerElement.addEventListener('touchmove', handleContainerTouchMoveUnified as any, { passive: false });
       containerElement.addEventListener('touchend', handleContainerTouchEndUnified as any, { passive: false });
     }
 
     return () => {
       if (containerElement) {
-        containerElement.removeEventListener('mousedown', handleContainerMouseDownCapture as any, { capture: true });
-        containerElement.removeEventListener('touchstart', handleContainerTouchStartUnified as any, { capture: true } as any);
+        containerElement.removeEventListener('touchstart', handleContainerTouchStartUnified as any);
         containerElement.removeEventListener('touchmove', handleContainerTouchMoveUnified as any);
         containerElement.removeEventListener('touchend', handleContainerTouchEndUnified as any);
       }
@@ -98,14 +224,25 @@
 
   $effect(() => {
     if (image && !cropAreaInitialized) {
-      // Initialize crop area to full image size (only once per mount)
+      // Seed the frame with the previously-applied crop, or the full image if none.
       cropAreaInitialized = true;
-      cropArea = {
-        x: 0,
-        y: 0,
-        width: image.width,
-        height: image.height
-      };
+      if (seedCropArea) {
+        const sx = Math.max(0, Math.min(image.width, seedCropArea.x));
+        const sy = Math.max(0, Math.min(image.height, seedCropArea.y));
+        cropArea = {
+          x: sx,
+          y: sy,
+          width: Math.max(1, Math.min(seedCropArea.width, image.width - sx)),
+          height: Math.max(1, Math.min(seedCropArea.height, image.height - sy))
+        };
+      } else {
+        cropArea = {
+          x: 0,
+          y: 0,
+          width: image.width,
+          height: image.height
+        };
+      }
     }
   });
 
@@ -116,14 +253,22 @@
     event.stopPropagation();
 
     const coords = getEventCoords(event);
-    dragStart = { x: coords.clientX, y: coords.clientY };
-    initialCropArea = { ...cropArea };
 
     if (handle) {
+      // Resize via corner / edge handle — cancel any pan that the container started
+      dragStart = { x: coords.clientX, y: coords.clientY };
+      initialCropArea = { ...cropArea };
       isResizing = true;
       resizeHandle = handle;
+      isPanning = false;
+      haptic('selection');
     } else {
-      isDragging = true;
+      // Frame interior drag → pan the underlying image (iOS Photos / Lightroom style).
+      // The frame stays put on screen; the image moves beneath it.
+      isPanning = true;
+      panType = 'frame';
+      isDragging = false;
+      lastPanPosition = { x: coords.clientX, y: coords.clientY };
     }
   }
 
@@ -157,72 +302,19 @@
     return false;
   }
 
-  // Capture phase handler - runs before SVG element handlers
-  function handleContainerMouseDownCapture(event: MouseEvent) {
-    if (!canvas || !canvasCoords) return;
+  // Container mousedown — frame interior and handles stop propagation in their
+  // own handlers, so this only fires when the user pressed *outside* the frame.
+  // That case = canvas pan (viewport moves, image and frame both follow the finger).
+  function handleContainerMouseDown(event: MouseEvent) {
     if (event.button !== 0) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
-
-    // Check if inside crop area rectangle
-    const isInsideCropArea =
-      mouseX >= canvasCoords.x &&
-      mouseX <= canvasCoords.x + canvasCoords.width &&
-      mouseY >= canvasCoords.y &&
-      mouseY <= canvasCoords.y + canvasCoords.height;
-
-    // Check if on a resize handle
-    const handleRadius = 6;
-    const isOnHandle = isNearResizeHandle(mouseX, mouseY, handleRadius);
-
-    // If outside crop area AND not on a handle, start panning
-    if (!isInsideCropArea && !isOnHandle) {
-      event.preventDefault();
-      event.stopPropagation();
-      isPanning = true;
-      isDragging = false;
-      isResizing = false;
-      resizeHandle = null;
-      initialCropArea = null;
-      lastPanPosition = { x: event.clientX, y: event.clientY };
-    }
-  }
-
-  function handleContainerMouseDown(event: MouseEvent | TouchEvent) {
-    if (!canvas || !canvasCoords) return;
-
-    // Check if it's a mouse event with non-left button
-    if ('button' in event && event.button !== 0) return;
-
-    // For touch events, only handle single touch for panning
-    if ('touches' in event && event.touches.length > 1) return;
-
-    // Check if click is inside crop area
-    const rect = canvas.getBoundingClientRect();
-    const coords = getEventCoords(event);
-    const mouseX = coords.clientX - rect.left;
-    const mouseY = coords.clientY - rect.top;
-
-    const isInsideCropArea =
-      mouseX >= canvasCoords.x &&
-      mouseX <= canvasCoords.x + canvasCoords.width &&
-      mouseY >= canvasCoords.y &&
-      mouseY <= canvasCoords.y + canvasCoords.height;
-
-    // If inside crop area, let SVG elements handle it
-    if (isInsideCropArea) return;
-
-    // If outside crop area, start panning the viewport
     event.preventDefault();
     event.stopPropagation();
     isPanning = true;
-    isDragging = false;
+    panType = 'canvas';
     isResizing = false;
     resizeHandle = null;
     initialCropArea = null;
-    lastPanPosition = { x: coords.clientX, y: coords.clientY };
+    lastPanPosition = { x: event.clientX, y: event.clientY };
   }
 
 
@@ -231,44 +323,60 @@
 
     const coords = getEventCoords(event);
 
-    // Handle viewport panning (when dragging outside crop area)
-    if (isPanning && onViewportChange) {
+    // ── Pan — two flavours depending on where the drag started ──
+    if (isPanning) {
       const deltaX = coords.clientX - lastPanPosition.x;
       const deltaY = coords.clientY - lastPanPosition.y;
+      event.preventDefault();
 
-      // Use original image dimensions (same as Canvas.svelte when not cropped)
-      const imgWidth = image.width;
-      const imgHeight = image.height;
-      const totalScale = viewport.scale * viewport.zoom;
-      const scaledWidth = imgWidth * totalScale;
-      const scaledHeight = imgHeight * totalScale;
+      if (panType === 'canvas') {
+        // Drag started outside the frame → move the viewport itself.
+        // Both image and frame translate together (cropArea is untouched).
+        if (onViewportChange) {
+          onViewportChange({
+            offsetX: viewport.offsetX + deltaX,
+            offsetY: viewport.offsetY + deltaY
+          });
+        }
+        lastPanPosition = { x: coords.clientX, y: coords.clientY };
+        return;
+      }
 
-      // Allow 20% overflow outside canvas
-      const overflowMargin = 0.2;
-      const maxOffsetX = (scaledWidth / 2) - (canvas.width / 2) + (canvas.width * overflowMargin);
-      const maxOffsetY = (scaledHeight / 2) - (canvas.height / 2) + (canvas.height * overflowMargin);
+      // panType === 'frame'
+      // Drag inside the frame → image scrolls under a stationary frame.
+      // cropArea moves in image space by the inverse of the finger motion, and
+      // viewport.offset is counter-adjusted so the frame's canvas position stays put.
+      const scale = viewport.scale * viewport.zoom;
+      const imageDeltaX = deltaX / scale;
+      const imageDeltaY = deltaY / scale;
 
-      // Apply limits
-      const newOffsetX = viewport.offsetX + deltaX;
-      const newOffsetY = viewport.offsetY + deltaY;
+      let newCropX = cropArea.x - imageDeltaX;
+      let newCropY = cropArea.y - imageDeltaY;
 
-      const clampedOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
-      const clampedOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
+      // Clamp to image bounds — the frame can't leave the picture
+      newCropX = Math.max(0, Math.min(image.width - cropArea.width, newCropX));
+      newCropY = Math.max(0, Math.min(image.height - cropArea.height, newCropY));
 
-      onViewportChange({
-        offsetX: clampedOffsetX,
-        offsetY: clampedOffsetY
-      });
+      const actualImageDeltaX = newCropX - cropArea.x;
+      const actualImageDeltaY = newCropY - cropArea.y;
+      const actualScreenDeltaX = -actualImageDeltaX * scale;
+      const actualScreenDeltaY = -actualImageDeltaY * scale;
+
+      cropArea = { ...cropArea, x: newCropX, y: newCropY };
+
+      if (onViewportChange) {
+        onViewportChange({
+          offsetX: viewport.offsetX + actualScreenDeltaX,
+          offsetY: viewport.offsetY + actualScreenDeltaY
+        });
+      }
 
       lastPanPosition = { x: coords.clientX, y: coords.clientY };
-      event.preventDefault();
       return;
     }
 
-    // Handle crop area dragging and resizing
-    if (!initialCropArea) return;
-
-    if (!isDragging && !isResizing) return;
+    // Handle crop area resizing
+    if (!isResizing || !initialCropArea || !resizeHandle) return;
 
     const deltaX = coords.clientX - dragStart.x;
     const deltaY = coords.clientY - dragStart.y;
@@ -278,48 +386,100 @@
     const imageDeltaX = deltaX / scale;
     const imageDeltaY = deltaY / scale;
 
-    if (isDragging) {
-      // Move crop area
-      cropArea.x = Math.max(0, Math.min(
-        image.width - cropArea.width,
-        initialCropArea.x + imageDeltaX
-      ));
-      cropArea.y = Math.max(0, Math.min(
-        image.height - cropArea.height,
-        initialCropArea.y + imageDeltaY
-      ));
-    } else if (isResizing && resizeHandle) {
-      // Resize crop area
-      const minSize = 50;
+    const minSize = 50;
+    const ratio = lockedAspectRatio;
+    const isCorner = resizeHandle.length === 2;
+
+    if (ratio !== null) {
+      // ── Aspect-locked resize ────────────────────────────────────────────
+      let newWidth = initialCropArea.width;
+      let newHeight = initialCropArea.height;
+      let newX = initialCropArea.x;
+      let newY = initialCropArea.y;
+
+      if (isCorner) {
+        // Use the dominant axis to drive the resize, derive the other from the ratio
+        const dxSign = resizeHandle.includes('e') ? 1 : -1;
+        const dySign = resizeHandle.includes('s') ? 1 : -1;
+        const dxAdj = imageDeltaX * dxSign;
+        const dyAdj = imageDeltaY * dySign;
+
+        if (Math.abs(dxAdj) > Math.abs(dyAdj)) {
+          newWidth = initialCropArea.width + dxAdj;
+          newHeight = newWidth / ratio;
+        } else {
+          newHeight = initialCropArea.height + dyAdj;
+          newWidth = newHeight * ratio;
+        }
+
+        if (newWidth < minSize || newHeight < minSize) return;
+
+        // Anchor opposite corner
+        if (resizeHandle.includes('w')) {
+          newX = initialCropArea.x + initialCropArea.width - newWidth;
+        }
+        if (resizeHandle.includes('n')) {
+          newY = initialCropArea.y + initialCropArea.height - newHeight;
+        }
+      } else {
+        // Edge handle — drive on the perpendicular axis, expand symmetrically on the other
+        if (resizeHandle === 'e' || resizeHandle === 'w') {
+          if (resizeHandle === 'e') {
+            newWidth = initialCropArea.width + imageDeltaX;
+          } else {
+            newWidth = initialCropArea.width - imageDeltaX;
+            newX = initialCropArea.x + imageDeltaX;
+          }
+          newHeight = newWidth / ratio;
+          newY = initialCropArea.y + (initialCropArea.height - newHeight) / 2;
+        } else {
+          if (resizeHandle === 's') {
+            newHeight = initialCropArea.height + imageDeltaY;
+          } else {
+            newHeight = initialCropArea.height - imageDeltaY;
+            newY = initialCropArea.y + imageDeltaY;
+          }
+          newWidth = newHeight * ratio;
+          newX = initialCropArea.x + (initialCropArea.width - newWidth) / 2;
+        }
+        if (newWidth < minSize || newHeight < minSize) return;
+      }
+
+      // Bounds check — refuse the update if it would push outside the image
+      if (newX < 0 || newY < 0 || newX + newWidth > image.width || newY + newHeight > image.height) return;
+
+      cropArea = { x: newX, y: newY, width: newWidth, height: newHeight };
+    } else {
+      // ── Free resize ────────────────────────────────────────────────────
+      let next = { ...cropArea };
 
       if (resizeHandle.includes('w')) {
-        const newX = Math.max(0, Math.min(
-          initialCropArea.x + initialCropArea.width - minSize,
-          initialCropArea.x + imageDeltaX
-        ));
-        cropArea.width = initialCropArea.width + (initialCropArea.x - newX);
-        cropArea.x = newX;
+        const newX = Math.max(
+          0,
+          Math.min(initialCropArea.x + initialCropArea.width - minSize, initialCropArea.x + imageDeltaX)
+        );
+        next.width = initialCropArea.width + (initialCropArea.x - newX);
+        next.x = newX;
       }
       if (resizeHandle.includes('e')) {
-        cropArea.width = Math.max(minSize, Math.min(
-          image.width - initialCropArea.x,
-          initialCropArea.width + imageDeltaX
-        ));
+        next.width = Math.max(minSize, Math.min(image.width - initialCropArea.x, initialCropArea.width + imageDeltaX));
       }
       if (resizeHandle.includes('n')) {
-        const newY = Math.max(0, Math.min(
-          initialCropArea.y + initialCropArea.height - minSize,
-          initialCropArea.y + imageDeltaY
-        ));
-        cropArea.height = initialCropArea.height + (initialCropArea.y - newY);
-        cropArea.y = newY;
+        const newY = Math.max(
+          0,
+          Math.min(initialCropArea.y + initialCropArea.height - minSize, initialCropArea.y + imageDeltaY)
+        );
+        next.height = initialCropArea.height + (initialCropArea.y - newY);
+        next.y = newY;
       }
       if (resizeHandle.includes('s')) {
-        cropArea.height = Math.max(minSize, Math.min(
-          image.height - initialCropArea.y,
-          initialCropArea.height + imageDeltaY
-        ));
+        next.height = Math.max(
+          minSize,
+          Math.min(image.height - initialCropArea.y, initialCropArea.height + imageDeltaY)
+        );
       }
+
+      cropArea = next;
     }
   }
 
@@ -367,295 +527,176 @@
     };
   }
 
+  // Wheel zoom — exponential (log-scale feel), cursor-focused.
+  // Normalizes trackpad line-mode / pixel-mode. Shift = coarse step.
   function handleWheel(event: WheelEvent) {
-    if (!image || !canvas || !canvasCoords) return;
-
-    // Check if cursor is inside crop area
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = event.clientX - rect.left;
-    const mouseY = event.clientY - rect.top;
-
-    const isInsideCropArea =
-      mouseX >= canvasCoords.x &&
-      mouseX <= canvasCoords.x + canvasCoords.width &&
-      mouseY >= canvasCoords.y &&
-      mouseY <= canvasCoords.y + canvasCoords.height;
-
-    // If outside crop area, let the event bubble to ImageEditor for viewport zoom
-    if (!isInsideCropArea) {
-      return;
-    }
-
+    if (!canvas || !image) return;
     event.preventDefault();
     event.stopPropagation();
 
-    // Calculate zoom delta
-    const delta = -event.deltaY * 0.001;
-    const zoomFactor = 1 + delta;
+    let dy = event.deltaY;
+    if (event.deltaMode === 1) dy *= 16; // line
+    else if (event.deltaMode === 2) dy *= 100; // page
 
-    // Calculate new dimensions while maintaining aspect ratio
-    const currentAspectRatio = cropArea.width / cropArea.height;
-    const centerX = cropArea.x + cropArea.width / 2;
-    const centerY = cropArea.y + cropArea.height / 2;
+    const coarseness = event.shiftKey ? 0.0048 : 0.002;
+    const factor = Math.exp(-dy * coarseness);
+    const targetZoom = viewport.zoom * factor;
 
-    let newWidth = cropArea.width * zoomFactor;
-    let newHeight = cropArea.height * zoomFactor;
+    const rect = canvas.getBoundingClientRect();
+    const focusX = event.clientX - rect.left;
+    const focusY = event.clientY - rect.top;
+    applyCursorFocusedZoom(targetZoom, focusX, focusY);
+  }
 
-    // Limit minimum size
-    const minSize = 50;
-    if (newWidth < minSize || newHeight < minSize) {
+  // Keyboard shortcuts — Enter / Esc / Arrow keys (1px), Shift+Arrow (10px)
+  function handleKeyDown(event: KeyboardEvent) {
+    // Don't hijack keys while user is typing in an input
+    const target = event.target as HTMLElement | null;
+    if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      apply();
       return;
     }
-
-    // Limit to image bounds
-    if (newWidth > image.width) {
-      newWidth = image.width;
-      newHeight = newWidth / currentAspectRatio;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onCancel();
+      return;
     }
-    if (newHeight > image.height) {
-      newHeight = image.height;
-      newWidth = newHeight * currentAspectRatio;
+    if (!image) return;
+    const step = event.shiftKey ? 10 : 1;
+    if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      cropArea = { ...cropArea, x: Math.max(0, cropArea.x - step) };
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      cropArea = { ...cropArea, x: Math.min(image.width - cropArea.width, cropArea.x + step) };
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      cropArea = { ...cropArea, y: Math.max(0, cropArea.y - step) };
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      cropArea = { ...cropArea, y: Math.min(image.height - cropArea.height, cropArea.y + step) };
+    } else if (event.key === '0' && (event.metaKey || event.ctrlKey)) {
+      event.preventDefault();
+      fitToScreen();
     }
+  }
 
-    // Calculate new position to keep center in the same place
-    let newX = centerX - newWidth / 2;
-    let newY = centerY - newHeight / 2;
+  // ── Cursor-focused canvas zoom ─────────────────────────────────────────
+  // This is the *standard* zoom: both the image and the frame scale together
+  // (the frame is drawn relative to cropArea in image space, so as viewport.zoom
+  //  changes, the frame naturally follows the image on screen). cropArea is
+  //  NOT modified — the "which part of the image is cropped" selection is
+  //  preserved across zooms, only its visual size on canvas changes.
+  //
+  // Pan (frame-stationary) is still handled separately in handleMouseMove,
+  // where both cropArea and viewport.offset update together.
+  const MIN_ZOOM = 0.25;
+  const MAX_ZOOM = 10;
 
-    // Ensure crop area stays within image bounds
-    newX = Math.max(0, Math.min(image.width - newWidth, newX));
-    newY = Math.max(0, Math.min(image.height - newHeight, newY));
+  function applyCursorFocusedZoom(
+    targetZoom: number,
+    focusCanvasX: number,
+    focusCanvasY: number
+  ): boolean {
+    if (!canvas || !onViewportChange) return false;
 
-    cropArea = {
-      x: newX,
-      y: newY,
-      width: newWidth,
-      height: newHeight
-    };
+    const oldZoom = viewport.zoom;
+    const clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, targetZoom));
+    if (Math.abs(clampedZoom - oldZoom) < 1e-4) return false;
 
-    // Check if crop area fits in canvas, if not, zoom out the viewport
-    if (onViewportChange) {
-      const totalScale = viewport.scale * viewport.zoom;
-      const cropWidthOnCanvas = newWidth * totalScale;
-      const cropHeightOnCanvas = newHeight * totalScale;
+    // Keep the image point under the focus stationary on screen.
+    const cxRel = focusCanvasX - canvas.width / 2;
+    const cyRel = focusCanvasY - canvas.height / 2;
+    const zoomRatio = clampedZoom / oldZoom;
+    const newOffsetX = cxRel - (cxRel - viewport.offsetX) * zoomRatio;
+    const newOffsetY = cyRel - (cyRel - viewport.offsetY) * zoomRatio;
 
-      // Use 90% of canvas size to add some padding
-      const targetWidth = canvas.width * 0.9;
-      const targetHeight = canvas.height * 0.9;
+    onViewportChange({
+      zoom: clampedZoom,
+      offsetX: newOffsetX,
+      offsetY: newOffsetY
+    });
+    return true;
+  }
 
-      // If crop area is larger than canvas, calculate required zoom
-      if (cropWidthOnCanvas > targetWidth || cropHeightOnCanvas > targetHeight) {
-        const requiredZoomWidth = targetWidth / (newWidth * viewport.scale);
-        const requiredZoomHeight = targetHeight / (newHeight * viewport.scale);
-        const requiredZoom = Math.min(requiredZoomWidth, requiredZoomHeight);
-
-        // Only zoom out, never zoom in automatically
-        if (requiredZoom < viewport.zoom) {
-          onViewportChange({ zoom: requiredZoom });
-        }
-      }
-    }
+  function fitToScreen() {
+    if (!onViewportChange) return;
+    haptic('light');
+    onViewportChange({ zoom: 1, offsetX: 0, offsetY: 0 });
   }
 
   function handlePinchZoomStart(event: TouchEvent) {
-    if (!canvas || !canvasCoords || event.touches.length !== 2) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const touch1 = event.touches[0];
-    const touch2 = event.touches[1];
-
-    const touch1X = touch1.clientX - rect.left;
-    const touch1Y = touch1.clientY - rect.top;
-    const touch2X = touch2.clientX - rect.left;
-    const touch2Y = touch2.clientY - rect.top;
-
-    // Check if both touches are inside crop area
-    const touch1Inside =
-      touch1X >= canvasCoords.x &&
-      touch1X <= canvasCoords.x + canvasCoords.width &&
-      touch1Y >= canvasCoords.y &&
-      touch1Y <= canvasCoords.y + canvasCoords.height;
-
-    const touch2Inside =
-      touch2X >= canvasCoords.x &&
-      touch2X <= canvasCoords.x + canvasCoords.width &&
-      touch2Y >= canvasCoords.y &&
-      touch2Y <= canvasCoords.y + canvasCoords.height;
-
-    // If both touches are outside crop area, let event bubble for viewport zoom
-    if (!touch1Inside && !touch2Inside) {
-      return;
-    }
-
+    if (event.touches.length !== 2) return;
     event.preventDefault();
-
-    const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
-    initialPinchDistance = distance;
-    initialCropSize = { width: cropArea.width, height: cropArea.height };
+    const t1 = event.touches[0];
+    const t2 = event.touches[1];
+    initialPinchDistance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+    initialPinchZoom = viewport.zoom;
   }
 
   function handlePinchZoomMove(event: TouchEvent) {
-    if (!image || !canvas || !canvasCoords || event.touches.length !== 2) return;
-    if (initialPinchDistance === 0 || !initialCropSize) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const touch1 = event.touches[0];
-    const touch2 = event.touches[1];
-
-    const touch1X = touch1.clientX - rect.left;
-    const touch1Y = touch1.clientY - rect.top;
-    const touch2X = touch2.clientX - rect.left;
-    const touch2Y = touch2.clientY - rect.top;
-
-    // Check if both touches are inside crop area
-    const touch1Inside =
-      touch1X >= canvasCoords.x &&
-      touch1X <= canvasCoords.x + canvasCoords.width &&
-      touch1Y >= canvasCoords.y &&
-      touch1Y <= canvasCoords.y + canvasCoords.height;
-
-    const touch2Inside =
-      touch2X >= canvasCoords.x &&
-      touch2X <= canvasCoords.x + canvasCoords.width &&
-      touch2Y >= canvasCoords.y &&
-      touch2Y <= canvasCoords.y + canvasCoords.height;
-
-    // If both touches are outside crop area, let event bubble
-    if (!touch1Inside && !touch2Inside) {
-      handlePinchZoomEnd();
-      return;
-    }
-
+    if (event.touches.length !== 2 || initialPinchDistance === 0) return;
+    if (!canvas) return;
     event.preventDefault();
 
-    const distance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
-    const scale = distance / initialPinchDistance;
+    const t1 = event.touches[0];
+    const t2 = event.touches[1];
+    const distance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+    const scaleRatio = distance / initialPinchDistance;
+    const targetZoom = initialPinchZoom * scaleRatio;
 
-    const currentAspectRatio = cropArea.width / cropArea.height;
-    const centerX = cropArea.x + cropArea.width / 2;
-    const centerY = cropArea.y + cropArea.height / 2;
-
-    let newWidth = initialCropSize.width * scale;
-    let newHeight = initialCropSize.height * scale;
-
-    // Limit minimum size
-    const minSize = 50;
-    if (newWidth < minSize || newHeight < minSize) {
-      return;
-    }
-
-    // Limit to image bounds
-    if (newWidth > image.width) {
-      newWidth = image.width;
-      newHeight = newWidth / currentAspectRatio;
-    }
-    if (newHeight > image.height) {
-      newHeight = image.height;
-      newWidth = newHeight * currentAspectRatio;
-    }
-
-    // Calculate new position to keep center in the same place
-    let newX = centerX - newWidth / 2;
-    let newY = centerY - newHeight / 2;
-
-    // Ensure crop area stays within image bounds
-    newX = Math.max(0, Math.min(image.width - newWidth, newX));
-    newY = Math.max(0, Math.min(image.height - newHeight, newY));
-
-    cropArea = {
-      x: newX,
-      y: newY,
-      width: newWidth,
-      height: newHeight
-    };
-
-    // Check if crop area fits in canvas, adjust viewport if needed
-    if (onViewportChange) {
-      const totalScale = viewport.scale * viewport.zoom;
-      const cropWidthOnCanvas = newWidth * totalScale;
-      const cropHeightOnCanvas = newHeight * totalScale;
-
-      const targetWidth = canvas.width * 0.9;
-      const targetHeight = canvas.height * 0.9;
-
-      if (cropWidthOnCanvas > targetWidth || cropHeightOnCanvas > targetHeight) {
-        const requiredZoomWidth = targetWidth / (newWidth * viewport.scale);
-        const requiredZoomHeight = targetHeight / (newHeight * viewport.scale);
-        const requiredZoom = Math.min(requiredZoomWidth, requiredZoomHeight);
-
-        if (requiredZoom < viewport.zoom) {
-          onViewportChange({ zoom: requiredZoom });
-        }
-      }
-    }
+    const rect = canvas.getBoundingClientRect();
+    const focusX = (t1.clientX + t2.clientX) / 2 - rect.left;
+    const focusY = (t1.clientY + t2.clientY) / 2 - rect.top;
+    applyCursorFocusedZoom(targetZoom, focusX, focusY);
   }
 
   function handlePinchZoomEnd() {
     initialPinchDistance = 0;
-    initialCropSize = null;
   }
 
-  // Unified touch handlers that delegate based on finger count (runs in capture phase)
+  // Unified touch handlers — 1 finger pan (frame or canvas based on start position),
+  // 2 fingers = pinch zoom.
   function handleContainerTouchStartUnified(event: TouchEvent) {
-    // Check if touch is on a button or interactive element
     const target = event.target as HTMLElement;
-    if (target.closest('button') || target.closest('.crop-top-controls') || target.closest('.crop-controls')) {
-      // Let the button handle the event
+    if (target.closest('button')) return;
+
+    if (event.touches.length === 2) {
+      handlePinchZoomStart(event);
+      isPanning = false;
+      isResizing = false;
       return;
     }
 
-    // Two fingers = pinch zoom crop area
-    if (event.touches.length === 2) {
-      handlePinchZoomStart(event);
-    } else if (event.touches.length === 1) {
-      // Check if touch is outside crop area and not on handle - if so, pan
-      if (!canvas || !canvasCoords) return;
-
-      const rect = canvas.getBoundingClientRect();
+    if (event.touches.length === 1) {
+      // Child elements (frame border / handles) stopPropagation in their own
+      // touchstart, so if we reach here the touch is *outside* the frame.
+      // That maps to canvas pan (move viewport, keep cropArea in place).
+      event.preventDefault();
       const touch = event.touches[0];
-      const touchX = touch.clientX - rect.left;
-      const touchY = touch.clientY - rect.top;
-
-      const isInsideCropArea =
-        touchX >= canvasCoords.x &&
-        touchX <= canvasCoords.x + canvasCoords.width &&
-        touchY >= canvasCoords.y &&
-        touchY <= canvasCoords.y + canvasCoords.height;
-
-      const handleRadius = 20; // Larger for touch
-      const isOnHandle = isNearResizeHandle(touchX, touchY, handleRadius);
-
-      if (!isInsideCropArea && !isOnHandle) {
-        // Start panning
-        event.preventDefault();
-        event.stopPropagation();
-        isPanning = true;
-        isDragging = false;
-        isResizing = false;
-        resizeHandle = null;
-        initialCropArea = null;
-        lastPanPosition = { x: touch.clientX, y: touch.clientY };
-      }
-      // Otherwise, let the event continue to SVG elements
+      isPanning = true;
+      panType = 'canvas';
+      isResizing = false;
+      lastPanPosition = { x: touch.clientX, y: touch.clientY };
     }
   }
 
   function handleContainerTouchMoveUnified(event: TouchEvent) {
-    // If pinch is active (2 fingers)
     if (event.touches.length === 2 && initialPinchDistance > 0) {
       handlePinchZoomMove(event);
-    } else {
-      // Single finger move (pan viewport, or drag/resize crop handled by mouse move)
-      handleMouseMove(event);
+      return;
     }
+    handleMouseMove(event);
   }
 
   function handleContainerTouchEndUnified(event: TouchEvent) {
     if (event.touches.length === 0) {
-      // All fingers lifted
       handleMouseUp();
       handlePinchZoomEnd();
     } else if (event.touches.length === 1 && initialPinchDistance > 0) {
-      // Went from 2 fingers to 1 finger
       handlePinchZoomEnd();
     }
   }
@@ -686,6 +727,7 @@
 <svelte:window
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
+  onkeydown={handleKeyDown}
 />
 
 {#if canvasCoords && canvas}
@@ -694,6 +736,7 @@
     class="crop-container"
     class:panning={isPanning}
     onwheel={handleWheel}
+    onmousedown={handleContainerMouseDown}
   >
   <svg
     class="crop-overlay"
@@ -727,222 +770,347 @@
       style="pointer-events: none;"
     />
 
-    <!-- Crop area border with dashed line -->
+    <!-- Frame border (solid white) — also catches inside drag → pan -->
     <rect
       x={canvasCoords.x}
       y={canvasCoords.y}
       width={canvasCoords.width}
       height={canvasCoords.height}
-      fill="none"
-      stroke="var(--primary-color, #63b97b)"
-      stroke-width="2"
-      stroke-dasharray="5,5"
-      style="pointer-events: all; cursor: move;"
+      fill="transparent"
+      stroke="rgba(255, 255, 255, 0.85)"
+      stroke-width={frameStrokeWidth}
+      style="pointer-events: all; cursor: grab;"
       onmousedown={(e) => handleMouseDown(e)}
       ontouchstart={(e) => handleMouseDown(e)}
     />
 
-    <!-- Grid lines (rule of thirds) -->
+    <!-- Grid lines (rule of thirds) — brighter while dragging -->
     <line
       x1={canvasCoords.x + canvasCoords.width / 3}
       y1={canvasCoords.y}
       x2={canvasCoords.x + canvasCoords.width / 3}
       y2={canvasCoords.y + canvasCoords.height}
-      stroke="rgba(255, 255, 255, 0.3)"
+      stroke={gridStroke}
       stroke-width="1"
-      style="pointer-events: none;"
+      style="pointer-events: none; transition: stroke 0.2s;"
     />
     <line
       x1={canvasCoords.x + (canvasCoords.width * 2) / 3}
       y1={canvasCoords.y}
       x2={canvasCoords.x + (canvasCoords.width * 2) / 3}
       y2={canvasCoords.y + canvasCoords.height}
-      stroke="rgba(255, 255, 255, 0.3)"
+      stroke={gridStroke}
       stroke-width="1"
-      style="pointer-events: none;"
+      style="pointer-events: none; transition: stroke 0.2s;"
     />
     <line
       x1={canvasCoords.x}
       y1={canvasCoords.y + canvasCoords.height / 3}
       x2={canvasCoords.x + canvasCoords.width}
       y2={canvasCoords.y + canvasCoords.height / 3}
-      stroke="rgba(255, 255, 255, 0.3)"
+      stroke={gridStroke}
       stroke-width="1"
-      style="pointer-events: none;"
+      style="pointer-events: none; transition: stroke 0.2s;"
     />
     <line
       x1={canvasCoords.x}
       y1={canvasCoords.y + (canvasCoords.height * 2) / 3}
       x2={canvasCoords.x + canvasCoords.width}
       y2={canvasCoords.y + (canvasCoords.height * 2) / 3}
-      stroke="rgba(255, 255, 255, 0.3)"
+      stroke={gridStroke}
       stroke-width="1"
-      style="pointer-events: none;"
+      style="pointer-events: none; transition: stroke 0.2s;"
     />
 
-    <!-- Resize handles -->
-    <!-- Corners -->
-    <circle
-      cx={canvasCoords.x}
-      cy={canvasCoords.y}
-      r="6"
-      fill="var(--primary-color, #63b97b)"
-      stroke="white"
-      stroke-width="2"
+    <!-- ─── Edge bars ─── center 1/3 of each edge, fat white line -->
+    <!-- Top edge -->
+    <rect
+      x={canvasCoords.x + edgeOffsetX}
+      y={canvasCoords.y - barThickness / 2}
+      width={edgeBarLenH}
+      height={barThickness}
+      rx={barThickness / 2}
+      fill="#ffffff"
+      style="pointer-events: all; cursor: n-resize; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));"
+      onmousedown={(e) => handleMouseDown(e, 'n')}
+      ontouchstart={(e) => handleMouseDown(e, 'n')}
+    />
+    <!-- Bottom edge -->
+    <rect
+      x={canvasCoords.x + edgeOffsetX}
+      y={canvasCoords.y + canvasCoords.height - barThickness / 2}
+      width={edgeBarLenH}
+      height={barThickness}
+      rx={barThickness / 2}
+      fill="#ffffff"
+      style="pointer-events: all; cursor: s-resize; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));"
+      onmousedown={(e) => handleMouseDown(e, 's')}
+      ontouchstart={(e) => handleMouseDown(e, 's')}
+    />
+    <!-- Left edge -->
+    <rect
+      x={canvasCoords.x - barThickness / 2}
+      y={canvasCoords.y + edgeOffsetY}
+      width={barThickness}
+      height={edgeBarLenV}
+      rx={barThickness / 2}
+      fill="#ffffff"
+      style="pointer-events: all; cursor: w-resize; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));"
+      onmousedown={(e) => handleMouseDown(e, 'w')}
+      ontouchstart={(e) => handleMouseDown(e, 'w')}
+    />
+    <!-- Right edge -->
+    <rect
+      x={canvasCoords.x + canvasCoords.width - barThickness / 2}
+      y={canvasCoords.y + edgeOffsetY}
+      width={barThickness}
+      height={edgeBarLenV}
+      rx={barThickness / 2}
+      fill="#ffffff"
+      style="pointer-events: all; cursor: e-resize; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));"
+      onmousedown={(e) => handleMouseDown(e, 'e')}
+      ontouchstart={(e) => handleMouseDown(e, 'e')}
+    />
+
+    <!-- ─── Corner L-brackets ─── -->
+    <!-- NW corner -->
+    <path
+      d="M {canvasCoords.x + cornerLen} {canvasCoords.y - cornerThickness / 2 + 0.5} L {canvasCoords.x - cornerThickness / 2 + 0.5} {canvasCoords.y - cornerThickness / 2 + 0.5} L {canvasCoords.x - cornerThickness / 2 + 0.5} {canvasCoords.y + cornerLen}"
+      stroke="#ffffff"
+      stroke-width={cornerThickness}
+      stroke-linecap="square"
+      stroke-linejoin="miter"
+      fill="none"
+      style="pointer-events: none; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));"
+    />
+    <rect
+      x={canvasCoords.x - 14}
+      y={canvasCoords.y - 14}
+      width="28"
+      height="28"
+      fill="transparent"
       style="pointer-events: all; cursor: nw-resize;"
       onmousedown={(e) => handleMouseDown(e, 'nw')}
       ontouchstart={(e) => handleMouseDown(e, 'nw')}
     />
-    <circle
-      cx={canvasCoords.x + canvasCoords.width}
-      cy={canvasCoords.y}
-      r="6"
-      fill="var(--primary-color, #63b97b)"
-      stroke="white"
-      stroke-width="2"
+
+    <!-- NE corner -->
+    <path
+      d="M {canvasCoords.x + canvasCoords.width - cornerLen} {canvasCoords.y - cornerThickness / 2 + 0.5} L {canvasCoords.x + canvasCoords.width + cornerThickness / 2 - 0.5} {canvasCoords.y - cornerThickness / 2 + 0.5} L {canvasCoords.x + canvasCoords.width + cornerThickness / 2 - 0.5} {canvasCoords.y + cornerLen}"
+      stroke="#ffffff"
+      stroke-width={cornerThickness}
+      stroke-linecap="square"
+      stroke-linejoin="miter"
+      fill="none"
+      style="pointer-events: none; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));"
+    />
+    <rect
+      x={canvasCoords.x + canvasCoords.width - 14}
+      y={canvasCoords.y - 14}
+      width="28"
+      height="28"
+      fill="transparent"
       style="pointer-events: all; cursor: ne-resize;"
       onmousedown={(e) => handleMouseDown(e, 'ne')}
       ontouchstart={(e) => handleMouseDown(e, 'ne')}
     />
-    <circle
-      cx={canvasCoords.x}
-      cy={canvasCoords.y + canvasCoords.height}
-      r="6"
-      fill="var(--primary-color, #63b97b)"
-      stroke="white"
-      stroke-width="2"
+
+    <!-- SW corner -->
+    <path
+      d="M {canvasCoords.x + cornerLen} {canvasCoords.y + canvasCoords.height + cornerThickness / 2 - 0.5} L {canvasCoords.x - cornerThickness / 2 + 0.5} {canvasCoords.y + canvasCoords.height + cornerThickness / 2 - 0.5} L {canvasCoords.x - cornerThickness / 2 + 0.5} {canvasCoords.y + canvasCoords.height - cornerLen}"
+      stroke="#ffffff"
+      stroke-width={cornerThickness}
+      stroke-linecap="square"
+      stroke-linejoin="miter"
+      fill="none"
+      style="pointer-events: none; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));"
+    />
+    <rect
+      x={canvasCoords.x - 14}
+      y={canvasCoords.y + canvasCoords.height - 14}
+      width="28"
+      height="28"
+      fill="transparent"
       style="pointer-events: all; cursor: sw-resize;"
       onmousedown={(e) => handleMouseDown(e, 'sw')}
       ontouchstart={(e) => handleMouseDown(e, 'sw')}
     />
-    <circle
-      cx={canvasCoords.x + canvasCoords.width}
-      cy={canvasCoords.y + canvasCoords.height}
-      r="6"
-      fill="var(--primary-color, #63b97b)"
-      stroke="white"
-      stroke-width="2"
+
+    <!-- SE corner -->
+    <path
+      d="M {canvasCoords.x + canvasCoords.width - cornerLen} {canvasCoords.y + canvasCoords.height + cornerThickness / 2 - 0.5} L {canvasCoords.x + canvasCoords.width + cornerThickness / 2 - 0.5} {canvasCoords.y + canvasCoords.height + cornerThickness / 2 - 0.5} L {canvasCoords.x + canvasCoords.width + cornerThickness / 2 - 0.5} {canvasCoords.y + canvasCoords.height - cornerLen}"
+      stroke="#ffffff"
+      stroke-width={cornerThickness}
+      stroke-linecap="square"
+      stroke-linejoin="miter"
+      fill="none"
+      style="pointer-events: none; filter: drop-shadow(0 1px 3px rgba(0,0,0,0.5));"
+    />
+    <rect
+      x={canvasCoords.x + canvasCoords.width - 14}
+      y={canvasCoords.y + canvasCoords.height - 14}
+      width="28"
+      height="28"
+      fill="transparent"
       style="pointer-events: all; cursor: se-resize;"
       onmousedown={(e) => handleMouseDown(e, 'se')}
       ontouchstart={(e) => handleMouseDown(e, 'se')}
     />
-
-    <!-- Edges -->
-    <circle
-      cx={canvasCoords.x + canvasCoords.width / 2}
-      cy={canvasCoords.y}
-      r="6"
-      fill="var(--primary-color, #63b97b)"
-      stroke="white"
-      stroke-width="2"
-      style="pointer-events: all; cursor: n-resize;"
-      onmousedown={(e) => handleMouseDown(e, 'n')}
-      ontouchstart={(e) => handleMouseDown(e, 'n')}
-    />
-    <circle
-      cx={canvasCoords.x + canvasCoords.width}
-      cy={canvasCoords.y + canvasCoords.height / 2}
-      r="6"
-      fill="var(--primary-color, #63b97b)"
-      stroke="white"
-      stroke-width="2"
-      style="pointer-events: all; cursor: e-resize;"
-      onmousedown={(e) => handleMouseDown(e, 'e')}
-      ontouchstart={(e) => handleMouseDown(e, 'e')}
-    />
-    <circle
-      cx={canvasCoords.x + canvasCoords.width / 2}
-      cy={canvasCoords.y + canvasCoords.height}
-      r="6"
-      fill="var(--primary-color, #63b97b)"
-      stroke="white"
-      stroke-width="2"
-      style="pointer-events: all; cursor: s-resize;"
-      onmousedown={(e) => handleMouseDown(e, 's')}
-      ontouchstart={(e) => handleMouseDown(e, 's')}
-    />
-    <circle
-      cx={canvasCoords.x}
-      cy={canvasCoords.y + canvasCoords.height / 2}
-      r="6"
-      fill="var(--primary-color, #63b97b)"
-      stroke="white"
-      stroke-width="2"
-      style="pointer-events: all; cursor: w-resize;"
-      onmousedown={(e) => handleMouseDown(e, 'w')}
-      ontouchstart={(e) => handleMouseDown(e, 'w')}
-    />
   </svg>
 
-  <!-- Aspect ratio and transform controls -->
-  <div class="crop-top-controls">
-    <div class="transform-controls">
-      <div class="control-group">
-        <div class="control-label">{$_('editor.rotate')}</div>
-        <div class="button-group">
-          <button class="transform-btn" onclick={rotateLeft} title={$_('editor.rotateLeft')}>
-            <RotateCcw size={18} />
-          </button>
-          <button class="transform-btn" onclick={rotateRight} title={$_('editor.rotateRight')}>
-            <RotateCw size={18} />
-          </button>
-        </div>
-      </div>
-
-      <div class="control-group">
-        <div class="control-label">{$_('editor.flip')}</div>
-        <div class="button-group">
-          <button
-            class="transform-btn"
-            class:active={transform.flipHorizontal}
-            onclick={toggleFlipHorizontal}
-            title={$_('editor.flipHorizontal')}
-          >
-            <FlipHorizontal size={18} />
-          </button>
-          <button
-            class="transform-btn"
-            class:active={transform.flipVertical}
-            onclick={toggleFlipVertical}
-            title={$_('editor.flipVertical')}
-          >
-            <FlipVertical size={18} />
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <div class="aspect-ratio-controls">
-      <button class="aspect-btn" onclick={() => setAspectRatio(16/9)}>
-        16:9
-      </button>
-      <button class="aspect-btn" onclick={() => setAspectRatio(3/2)}>
-        3:2
-      </button>
-      <button class="aspect-btn" onclick={() => setAspectRatio(1/1)}>
-        1:1
-      </button>
-    </div>
+  <!-- Pixel dimension badge -->
+  <div
+    class="dim-badge"
+    class:active={isInteracting}
+    style="left: {canvasCoords.x + canvasCoords.width / 2}px; top: {canvasCoords.y - 12}px;"
+  >
+    <span class="dim-num">{displayWidth} × {displayHeight}</span>
+    {#if displayRatio}
+      <span class="dim-ratio">{displayRatio}</span>
+    {/if}
   </div>
 
-  <!-- Control buttons -->
-  <div class="crop-controls">
-    <button class="btn btn-primary" onclick={apply}>
-      {$_('editor.apply')}
-    </button>
-    <button class="btn btn-secondary" onclick={onCancel}>
-      {$_('editor.cancel')}
-    </button>
-  </div>
+  <FloatingRail side="right">
+    {#snippet top()}
+      <RailButton label={$_('editor.cancel')} variant="default" haptics="light" onclick={onCancel}>
+        <X size={20} strokeWidth={2.2} />
+      </RailButton>
+      <RailButton label={$_('editor.apply')} variant="accent" haptics="success" onclick={apply}>
+        <Check size={20} strokeWidth={2.4} />
+      </RailButton>
+    {/snippet}
+
+    {#snippet children()}
+      <RailButton label={$_('editor.rotateLeft')} onclick={rotateLeft} haptics="light">
+        <RotateCcw size={20} strokeWidth={1.8} />
+      </RailButton>
+      <RailButton label={$_('editor.rotateRight')} onclick={rotateRight} haptics="light">
+        <RotateCw size={20} strokeWidth={1.8} />
+      </RailButton>
+      <RailButton
+        label={$_('editor.flipHorizontal')}
+        pressed={transform.flipHorizontal}
+        haptics={false}
+        onclick={toggleFlipHorizontal}
+      >
+        <FlipHorizontal size={20} strokeWidth={1.8} />
+      </RailButton>
+      <RailButton
+        label={$_('editor.flipVertical')}
+        pressed={transform.flipVertical}
+        haptics={false}
+        onclick={toggleFlipVertical}
+      >
+        <FlipVertical size={20} strokeWidth={1.8} />
+      </RailButton>
+
+      <span class="rail-divider" aria-hidden="true"></span>
+
+      <button
+        bind:this={aspectAnchor}
+        type="button"
+        class="rail-color-trigger"
+        class:open={aspectPopoverOpen}
+        aria-label="Aspect ratio"
+        title="Aspect ratio"
+        onclick={toggleAspectPopover}
+      >
+        <CropIcon size={20} strokeWidth={1.8} />
+      </button>
+
+      <RailButton
+        label={aspectLocked ? 'Unlock aspect' : 'Lock aspect'}
+        pressed={aspectLocked}
+        haptics={false}
+        onclick={toggleAspectLock}
+      >
+        {#if aspectLocked}
+          <Lock size={18} strokeWidth={2} />
+        {:else}
+          <Unlock size={18} strokeWidth={2} />
+        {/if}
+      </RailButton>
+
+      <RailButton label="Swap orientation" haptics="light" onclick={swapOrientation}>
+        <Repeat2 size={20} strokeWidth={1.8} />
+      </RailButton>
+
+      <RailButton label="Fit to screen" haptics="light" onclick={fitToScreen}>
+        <Maximize2 size={18} strokeWidth={2} />
+      </RailButton>
+    {/snippet}
+
+    {#snippet bottom()}
+      <RailButton label={$_('editor.reset')} variant="default" haptics="warning" onclick={resetCrop}>
+        <RotateCcwSquare size={18} strokeWidth={1.8} />
+      </RailButton>
+    {/snippet}
+  </FloatingRail>
+
+  <Popover open={aspectPopoverOpen} onClose={() => (aspectPopoverOpen = false)} side="left" anchor={aspectAnchor}>
+    {#snippet children()}
+      <div class="popover-title">Aspect ratio</div>
+      <div class="aspect-grid">
+        <button class="aspect-pop-btn" class:active={!aspectLocked} onclick={() => chooseAspect(null)}>Free</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(1 / 1)}>1:1</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(4 / 5)}>4:5</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(5 / 4)}>5:4</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(4 / 3)}>4:3</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(3 / 4)}>3:4</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(3 / 2)}>3:2</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(2 / 3)}>2:3</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(16 / 9)}>16:9</button>
+        <button class="aspect-pop-btn" onclick={() => chooseAspect(9 / 16)}>9:16</button>
+      </div>
+    {/snippet}
+  </Popover>
   </div>
 {/if}
 
 <style lang="postcss">
+  :global(.aspect-grid) {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--tk-space-2);
+  }
+
+  :global(.aspect-pop-btn) {
+    appearance: none;
+    background: var(--tk-surface-1);
+    border: 1px solid var(--tk-border-subtle);
+    color: var(--tk-text-secondary);
+    padding: var(--tk-space-2) var(--tk-space-3);
+    border-radius: var(--tk-radius-md);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: var(--tk-text-sm);
+    font-weight: var(--tk-weight-semibold);
+    letter-spacing: var(--tk-tracking-tight);
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+    -webkit-tap-highlight-color: transparent;
+  }
+  :global(.aspect-pop-btn:hover) {
+    background: var(--tk-surface-hover);
+    color: var(--tk-text-primary);
+  }
+  :global(.aspect-pop-btn:active) {
+    transform: scale(0.94);
+  }
+  :global(.aspect-pop-btn.active) {
+    background: var(--tk-accent-soft);
+    border-color: var(--tk-accent);
+    color: var(--tk-accent-hover);
+  }
+
   .crop-container {
     position: absolute;
     inset: 0;
     z-index: 10;
     cursor: grab;
+    touch-action: none;
   }
 
   .crop-container.panning {
@@ -954,187 +1122,223 @@
     z-index: 10;
   }
 
+  /* ─── Dimension badge ─── */
+  .dim-badge {
+    position: absolute;
+    transform: translate(-50%, -100%);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--tk-space-2);
+    padding: 6px 12px;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: var(--tk-radius-full);
+    color: var(--tk-text-primary);
+    font-family: var(--tk-font-mono);
+    font-size: var(--tk-text-xs);
+    font-weight: var(--tk-weight-semibold);
+    letter-spacing: 0.04em;
+    pointer-events: none;
+    z-index: 11;
+    white-space: nowrap;
+    opacity: 0.65;
+    transition:
+      opacity var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-medium) var(--tk-ease-spring);
+    will-change: opacity, transform;
+  }
+
+  .dim-badge.active {
+    opacity: 1;
+    transform: translate(-50%, calc(-100% - 4px));
+  }
+
+  .dim-num {
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .dim-ratio {
+    color: var(--tk-accent-hover);
+    padding-left: var(--tk-space-2);
+    border-left: 1px solid rgba(255, 255, 255, 0.18);
+    text-transform: uppercase;
+  }
+
+  /* ─── Floating top controls (transform + aspect ratio) ─── */
   .crop-top-controls {
     position: absolute;
-    top: 1rem;
+    top: var(--tk-space-3);
     left: 50%;
     transform: translateX(-50%);
     display: flex;
     align-items: center;
     flex-direction: column;
-    gap: 0.75rem;
+    gap: var(--tk-space-2);
     z-index: 20;
     pointer-events: auto;
 
     @media (max-width: 767px) {
-      top: 0.5rem;
-      gap: 0.5rem;
-      max-width: 90vw;
+      top: var(--tk-space-2);
+      gap: var(--tk-space-2);
+      max-width: 92vw;
     }
   }
 
-  .aspect-ratio-controls {
+  .aspect-ratio-controls,
+  .transform-controls {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    background: rgba(0, 0, 0, 0.8);
-    border-radius: 4px;
+    gap: var(--tk-space-1);
+    padding: var(--tk-space-1) var(--tk-space-2);
+    background: var(--tk-bg-glass-strong);
+    backdrop-filter: var(--tk-blur-sm);
+    -webkit-backdrop-filter: var(--tk-blur-sm);
+    border: 1px solid var(--tk-border-default);
+    border-radius: var(--tk-radius-full);
+    box-shadow: var(--tk-shadow-md);
     width: fit-content;
-
-    @media (max-width: 767px) {
-      padding: 0.4rem 0.6rem;
-      gap: 0.3rem;
-    }
   }
 
   .transform-controls {
-    display: flex;
-    gap: 1rem;
-    padding: 0.5rem 1rem;
-    background: rgba(0, 0, 0, 0.8);
-    border-radius: 4px;
-
-    @media (max-width: 767px) {
-      gap: 0.5rem;
-      padding: 0.4rem 0.6rem;
-    }
+    gap: var(--tk-space-2);
   }
 
   .control-group {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--tk-space-1);
   }
 
   .control-label {
-    font-size: 0.85rem;
-    color: #ccc;
-    margin-right: 0.25rem;
-
-    @media (max-width: 767px) {
-      font-size: 0.7rem;
-      display: none;
-    }
+    display: none;
   }
 
   .button-group {
     display: flex;
-    gap: 0.25rem;
-
-    @media (max-width: 767px) {
-      gap: 0.2rem;
-    }
+    gap: 2px;
   }
 
   .aspect-btn {
-    padding: 0.4rem 0.8rem;
-    background: #333;
-    color: #fff;
-    border: 1px solid #555;
-    border-radius: 4px;
+    appearance: none;
+    background: transparent;
+    color: var(--tk-text-secondary);
+    border: none;
+    padding: 0 var(--tk-space-3);
+    height: 36px;
+    border-radius: var(--tk-radius-full);
     cursor: pointer;
-    font-size: 0.85rem;
-    transition: all 0.2s;
-
-    @media (max-width: 767px) {
-      padding: 0.3rem 0.6rem;
-      font-size: 0.75rem;
-    }
+    font-family: inherit;
+    font-size: var(--tk-text-xs);
+    font-weight: var(--tk-weight-semibold);
+    text-transform: uppercase;
+    letter-spacing: var(--tk-tracking-wide);
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out);
+    -webkit-tap-highlight-color: transparent;
   }
 
   .aspect-btn:hover {
-    background: var(--primary-color, #63b97b);
-    border-color: var(--primary-color, #63b97b);
+    background: var(--tk-surface-hover);
+    color: var(--tk-text-primary);
+  }
+  .aspect-btn:active {
+    background: var(--tk-accent-soft);
+    color: var(--tk-accent-hover);
   }
 
   .transform-btn {
-    padding: 0.4rem 0.6rem;
-    background: #333;
-    color: #fff;
-    border: 1px solid #555;
-    border-radius: 4px;
+    appearance: none;
+    width: 36px;
+    height: 36px;
+    background: transparent;
+    color: var(--tk-text-secondary);
+    border: none;
+    border-radius: var(--tk-radius-md);
     cursor: pointer;
-    font-size: 0.85rem;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    @media (max-width: 767px) {
-      padding: 0.3rem 0.5rem;
-    }
+    display: grid;
+    place-items: center;
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+    -webkit-tap-highlight-color: transparent;
   }
 
   .transform-btn:hover {
-    background: #444;
-    border-color: #666;
+    background: var(--tk-surface-hover);
+    color: var(--tk-text-primary);
   }
-
+  .transform-btn:active {
+    transform: scale(0.92);
+  }
   .transform-btn.active {
-    background: var(--primary-color, #63b97b);
-    border-color: var(--primary-color, #63b97b);
+    background: var(--tk-accent-soft);
+    color: var(--tk-accent-hover);
   }
 
+  /* ─── Apply / cancel bar ─── */
   .crop-controls {
     position: absolute;
-    bottom: 1rem;
+    bottom: var(--tk-space-4);
     left: 50%;
     transform: translateX(-50%);
     display: flex;
-    gap: 0.5rem;
+    gap: var(--tk-space-2);
     z-index: 20;
     pointer-events: auto;
+    padding: var(--tk-space-2);
+    background: var(--tk-bg-glass-strong);
+    backdrop-filter: var(--tk-blur-sm);
+    -webkit-backdrop-filter: var(--tk-blur-sm);
+    border: 1px solid var(--tk-border-default);
+    border-radius: var(--tk-radius-full);
+    box-shadow: var(--tk-shadow-md);
 
     @media (max-width: 767px) {
-      bottom: 0.5rem;
-      left: 1rem;
-      right: 1rem;
-      transform: none;
-      width: calc(100% - 2rem);
-      justify-content: stretch;
+      bottom: var(--tk-space-3);
     }
   }
 
   .btn {
-    padding: 0.5rem 1rem;
+    appearance: none;
     border: none;
-    border-radius: 4px;
     cursor: pointer;
-    font-size: 0.9rem;
-    transition: all 0.2s;
-
-    @media (max-width: 767px) {
-      flex: 1;
-      padding: 0.75rem 1rem;
-      font-size: 1rem;
-    }
+    font-family: inherit;
+    font-size: var(--tk-text-sm);
+    font-weight: var(--tk-weight-semibold);
+    padding: 0 var(--tk-space-5);
+    height: 40px;
+    border-radius: var(--tk-radius-full);
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+    letter-spacing: var(--tk-tracking-tight);
+    -webkit-tap-highlight-color: transparent;
   }
 
   .btn-primary {
-    background: var(--primary-color, #63b97b);
-    color: #fff;
+    background: var(--tk-accent);
+    color: var(--tk-text-on-accent);
   }
-
   .btn-primary:hover {
-    background: var(--primary-color, #63b97b);
+    background: var(--tk-accent-hover);
+  }
+  .btn-primary:active {
+    transform: scale(0.96);
   }
 
   .btn-secondary {
-    background: #666;
-    color: #fff;
+    background: transparent;
+    color: var(--tk-text-secondary);
   }
-
   .btn-secondary:hover {
-    background: #777;
-  }
-
-  /* Larger touch targets for mobile */
-  @media (max-width: 767px) {
-    .crop-overlay circle {
-      r: 12 !important;
-      stroke-width: 3 !important;
-    }
+    background: var(--tk-surface-hover);
+    color: var(--tk-text-primary);
   }
 </style>

@@ -7,24 +7,13 @@
 </script>
 
 <svelte:head>
-  <title>TOKIMEKI Image Editor - Demo</title>
+  <title>TOKIMEKI Image Editor — A modern image editor for Svelte 5</title>
+  <meta name="description" content="A powerful and modern image editing library for Svelte 5 with WebGPU rendering." />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 </svelte:head>
 
 <main>
-  <div class="container">
-    <header>
-      <h1>TOKIMEKI Image Editor</h1>
-    </header>
-
-    <div class="demo-section">
-      <ImageEditor
-        width={1000}
-        height={600}
-        isStandalone={true}
-        onExport={handleExport}
-      />
-    </div>
-  </div>
+  <ImageEditor isStandalone={true} onExport={handleExport} />
 </main>
 
 <style lang="postcss">
@@ -32,36 +21,20 @@
     margin: 0;
     padding: 0;
     font-family: sans-serif;
-    background: #0a0a0a;
-    color: #fff;
+    background: #050507;
+    color: #f5f5f7;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overscroll-behavior: none;
+  }
+
+  :global(html) {
+    background: #050507;
   }
 
   main {
-    min-height: 100vh;
-    padding: 2rem;
-  }
-
-  .container {
-    max-width: 1200px;
-    margin: 0 auto;
-  }
-
-  header {
-    text-align: center;
-    margin-bottom: 3rem;
-  }
-
-  h1 {
-    font-size: 3rem;
-    margin: 0;
-    background: linear-gradient(135deg, #66b7ea 0%, #e07eed 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-  }
-
-  .demo-section {
-    display: flex;
-    justify-content: center;
+    position: fixed;
+    inset: 0;
+    overflow: hidden;
   }
 </style>

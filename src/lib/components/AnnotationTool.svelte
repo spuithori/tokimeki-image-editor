@@ -52,9 +52,51 @@
     imageToCanvasCoords as sharedImageToCanvasCoords,
     type CoordinateContext
   } from '../utils/coordinates';
-  import { Pencil, Eraser, ArrowRight, Square, Brush, Type, PaintBucket } from 'lucide-svelte';
-  import ToolPanel from './ToolPanel.svelte';
+  import { Pencil, Eraser, ArrowRight, Square, Brush, Type, PaintBucket, X, Trash2, Sparkles, Layers, ImageOff, EyeOff } from 'lucide-svelte';
+  import FloatingRail from './FloatingRail.svelte';
+  import RailButton from './RailButton.svelte';
+  import Popover from './Popover.svelte';
+  import Slider from './Slider.svelte';
+  import { haptic } from '../utils/haptics';
   import { DEFAULT_COLOR_PRESETS, DEFAULT_DRAWING_COLOR } from '../utils/colors';
+
+  // Popover state
+  let colorPopoverOpen = $state(false);
+  let widthPopoverOpen = $state(false);
+  let colorAnchor = $state<HTMLElement | null>(null);
+  let widthAnchor = $state<HTMLElement | null>(null);
+
+  function selectTool(tool: AnnotationType | 'eraser') {
+    if (currentTool === tool) return;
+    haptic('selection');
+    currentTool = tool;
+  }
+  function selectColor(c: string) {
+    haptic('selection');
+    currentColor = c;
+    colorPopoverOpen = false;
+  }
+  function toggleColorPopover() {
+    colorPopoverOpen = !colorPopoverOpen;
+    widthPopoverOpen = false;
+  }
+  function toggleWidthPopover() {
+    widthPopoverOpen = !widthPopoverOpen;
+    colorPopoverOpen = false;
+  }
+  function toggleShadow() {
+    haptic(shadowEnabled ? 'toggleOff' : 'toggleOn');
+    shadowEnabled = !shadowEnabled;
+  }
+  function toggleIgnoreBg() {
+    haptic(ignoreBackground ? 'toggleOff' : 'toggleOn');
+    ignoreBackground = !ignoreBackground;
+  }
+  function setEraserMode(mode: 'layer' | 'paint') {
+    if (eraserMode === mode) return;
+    haptic('selection');
+    eraserMode = mode;
+  }
 
   interface Props {
     canvas: HTMLCanvasElement | null;
@@ -1296,230 +1338,376 @@
   {/if}
 </div>
 
-<!-- Control panel -->
-<ToolPanel title={$_('editor.annotate')} {onClose}>
+<!-- Floating tool rail (right side) -->
+<FloatingRail side="right">
+  {#snippet top()}
+    <RailButton label={$_('editor.close')} variant="default" haptics="light" onclick={onClose}>
+      <X size={20} strokeWidth={2.2} />
+    </RailButton>
+  {/snippet}
+
   {#snippet children()}
-    <!-- Tool selection -->
-    <div class="tool-group">
-      <span class="group-label">{$_('annotate.tool')}</span>
-      <div class="tool-buttons">
-        <button
-          class="tool-btn"
-          class:active={currentTool === 'pen'}
-          onclick={() => currentTool = 'pen'}
-          title={$_('annotate.pen')}
-        >
-          <Pencil size={20} />
-        </button>
-        <button
-          class="tool-btn"
-          class:active={currentTool === 'brush'}
-          onclick={() => currentTool = 'brush'}
-          title={$_('annotate.brush')}
-        >
-          <Brush size={20} />
-        </button>
-        <button
-          class="tool-btn"
-          class:active={currentTool === 'fill'}
-          onclick={() => currentTool = 'fill'}
-          title={$_('annotate.fill')}
-        >
-          <PaintBucket size={20} />
-        </button>
-        <button
-          class="tool-btn"
-          class:active={currentTool === 'eraser'}
-          onclick={() => currentTool = 'eraser'}
-          title={$_('annotate.eraser')}
-        >
-          <Eraser size={20} />
-        </button>
-        <button
-          class="tool-btn"
-          class:active={currentTool === 'arrow'}
-          onclick={() => currentTool = 'arrow'}
-          title={$_('annotate.arrow')}
-        >
-          <ArrowRight size={20} />
-        </button>
-        <button
-          class="tool-btn"
-          class:active={currentTool === 'rectangle'}
-          onclick={() => currentTool = 'rectangle'}
-          title={$_('annotate.rectangle')}
-        >
-          <Square size={20} />
-        </button>
-        <button
-          class="tool-btn"
-          class:active={currentTool === 'text'}
-          onclick={() => currentTool = 'text'}
-          title={$_('annotate.text')}
-        >
-          <Type size={20} />
-        </button>
-      </div>
-    </div>
+    <RailButton label={$_('annotate.pen')} pressed={currentTool === 'pen'} onclick={() => selectTool('pen')}>
+      <Pencil size={20} strokeWidth={1.8} />
+    </RailButton>
+    <RailButton label={$_('annotate.brush')} pressed={currentTool === 'brush'} onclick={() => selectTool('brush')}>
+      <Brush size={20} strokeWidth={1.8} />
+    </RailButton>
+    <RailButton label={$_('annotate.fill')} pressed={currentTool === 'fill'} onclick={() => selectTool('fill')}>
+      <PaintBucket size={20} strokeWidth={1.8} />
+    </RailButton>
+    <RailButton label={$_('annotate.eraser')} pressed={currentTool === 'eraser'} onclick={() => selectTool('eraser')}>
+      <Eraser size={20} strokeWidth={1.8} />
+    </RailButton>
+    <RailButton label={$_('annotate.arrow')} pressed={currentTool === 'arrow'} onclick={() => selectTool('arrow')}>
+      <ArrowRight size={20} strokeWidth={1.8} />
+    </RailButton>
+    <RailButton label={$_('annotate.rectangle')} pressed={currentTool === 'rectangle'} onclick={() => selectTool('rectangle')}>
+      <Square size={20} strokeWidth={1.8} />
+    </RailButton>
+    <RailButton label={$_('annotate.text')} pressed={currentTool === 'text'} onclick={() => selectTool('text')}>
+      <Type size={20} strokeWidth={1.8} />
+    </RailButton>
 
-    <!-- Color selection -->
-    <div class="control-group">
-      <span class="group-label">{$_('annotate.color')}</span>
-      <div class="color-presets">
-        {#each colorPresets as color}
-          <button
-            class="color-btn"
-            class:active={currentColor === color}
-            style="background-color: {color}; {color === '#ffffff' ? 'border: 1px solid #666;' : ''}"
-            onclick={() => currentColor = color}
-            title={color}
-          ></button>
-        {/each}
-        <input
-          type="color"
-          class="color-picker"
-          value={currentColor}
-          oninput={(e) => currentColor = e.currentTarget.value}
-        />
-      </div>
-    </div>
+    <span class="rail-divider" aria-hidden="true"></span>
 
-    <!-- Stroke width (hidden for text tool) -->
-    {#if currentTool !== 'text'}
-      <div class="control-group">
-        <label for="stroke-width">
-          <span>{$_('annotate.strokeWidth')}</span>
-          <span class="value">{strokeWidth}px</span>
-        </label>
-        <input
-          id="stroke-width"
-          type="range"
-          min="5"
-          max="100"
-          bind:value={strokeWidth}
-        />
-      </div>
-    {/if}
-
-    <!-- Font size (text tool only) -->
-    {#if currentTool === 'text'}
-      <div class="control-group">
-        <label for="font-size">
-          <span>{$_('annotate.fontSize')}</span>
-          <span class="value">{fontSize}px</span>
-        </label>
-        <input
-          id="font-size"
-          type="range"
-          min="12"
-          max="200"
-          bind:value={fontSize}
-        />
-      </div>
-    {/if}
-
-    <!-- Shadow toggle -->
-    <div class="control-group">
-      <label class="toggle-label">
-        <span>{$_('annotate.shadow')}</span>
-        <button
-          class="toggle-btn"
-          class:active={shadowEnabled}
-          onclick={() => shadowEnabled = !shadowEnabled}
-          type="button"
-          title={$_('annotate.shadow')}
-        >
-          <span class="toggle-track">
-            <span class="toggle-thumb"></span>
-          </span>
-        </button>
-      </label>
-    </div>
-
-    <!-- Ignore background toggle (fill tool only) -->
-    {#if currentTool === 'fill'}
-      <div class="control-group">
-        <label class="toggle-label">
-          <span>{$_('annotate.ignoreBackground')}</span>
-          <button
-            class="toggle-btn"
-            class:active={ignoreBackground}
-            onclick={() => ignoreBackground = !ignoreBackground}
-            type="button"
-            title={$_('annotate.ignoreBackground')}
-          >
-            <span class="toggle-track">
-              <span class="toggle-thumb"></span>
-            </span>
-          </button>
-        </label>
-      </div>
-    {/if}
-
-    <!-- Eraser mode toggle (eraser tool only) -->
-    {#if currentTool === 'eraser'}
-      <div class="control-group">
-        <span class="group-label">{$_('annotate.eraserMode')}</span>
-        <div class="eraser-mode-buttons">
-          <button
-            class="mode-btn"
-            class:active={eraserMode === 'layer'}
-            onclick={() => eraserMode = 'layer'}
-            title={$_('annotate.eraserModeLayer')}
-          >
-            {$_('annotate.eraserModeLayerShort')}
-          </button>
-          <button
-            class="mode-btn"
-            class:active={eraserMode === 'paint'}
-            onclick={() => eraserMode = 'paint'}
-            title={$_('annotate.eraserModePaint')}
-          >
-            {$_('annotate.eraserModePaintShort')}
-          </button>
-        </div>
-      </div>
-    {/if}
-  {/snippet}
-
-  {#snippet actions()}
-    <button class="btn btn-danger" onclick={handleClearAll} disabled={annotations.length === 0}>
-      {$_('annotate.clearAll')}
+    <button
+      bind:this={colorAnchor}
+      type="button"
+      class="rail-color-trigger"
+      class:open={colorPopoverOpen}
+      aria-label={$_('annotate.color')}
+      aria-pressed={colorPopoverOpen}
+      title={$_('annotate.color')}
+      onclick={toggleColorPopover}
+    >
+      <span
+        class="color-swatch"
+        style="background-color: {currentColor}; border-color: {currentColor === '#ffffff' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.6)'}"
+      ></span>
     </button>
+
+    {#if currentTool !== 'text'}
+      <button
+        bind:this={widthAnchor}
+        type="button"
+        class="rail-width-trigger"
+        class:open={widthPopoverOpen}
+        aria-label={$_('annotate.strokeWidth')}
+        aria-pressed={widthPopoverOpen}
+        title={$_('annotate.strokeWidth')}
+        onclick={toggleWidthPopover}
+      >
+        <span
+          class="width-dot"
+          style="width: {Math.min(Math.max(strokeWidth / 4, 4), 22)}px; height: {Math.min(Math.max(strokeWidth / 4, 4), 22)}px;"
+        ></span>
+      </button>
+    {:else}
+      <button
+        bind:this={widthAnchor}
+        type="button"
+        class="rail-width-trigger"
+        class:open={widthPopoverOpen}
+        aria-label={$_('annotate.fontSize')}
+        aria-pressed={widthPopoverOpen}
+        title={$_('annotate.fontSize')}
+        onclick={toggleWidthPopover}
+      >
+        <span class="font-label">T</span>
+      </button>
+    {/if}
+
+    <RailButton
+      label={$_('annotate.shadow')}
+      pressed={shadowEnabled}
+      onclick={toggleShadow}
+      haptics={false}
+    >
+      <Sparkles size={18} strokeWidth={1.8} />
+    </RailButton>
+
+    {#if currentTool === 'fill'}
+      <RailButton
+        label={$_('annotate.ignoreBackground')}
+        pressed={ignoreBackground}
+        onclick={toggleIgnoreBg}
+        haptics={false}
+      >
+        <ImageOff size={18} strokeWidth={1.8} />
+      </RailButton>
+    {/if}
+
+    {#if currentTool === 'eraser'}
+      <span class="rail-divider" aria-hidden="true"></span>
+      <RailButton
+        label={$_('annotate.eraserModeLayer')}
+        pressed={eraserMode === 'layer'}
+        onclick={() => setEraserMode('layer')}
+      >
+        <Layers size={18} strokeWidth={1.8} />
+      </RailButton>
+      <RailButton
+        label={$_('annotate.eraserModePaint')}
+        pressed={eraserMode === 'paint'}
+        onclick={() => setEraserMode('paint')}
+      >
+        <EyeOff size={18} strokeWidth={1.8} />
+      </RailButton>
+    {/if}
   {/snippet}
-</ToolPanel>
+
+  {#snippet bottom()}
+    <RailButton
+      label={$_('annotate.clearAll')}
+      variant="danger"
+      disabled={annotations.length === 0}
+      haptics="warning"
+      onclick={handleClearAll}
+    >
+      <Trash2 size={18} strokeWidth={1.8} />
+    </RailButton>
+  {/snippet}
+</FloatingRail>
+
+<!-- Color popover -->
+<Popover open={colorPopoverOpen} onClose={() => (colorPopoverOpen = false)} side="left" anchor={colorAnchor}>
+  {#snippet children()}
+    <div class="popover-title">{$_('annotate.color')}</div>
+    <div class="color-grid">
+      {#each colorPresets as color}
+        <button
+          class="color-btn-pop"
+          class:active={currentColor === color}
+          style="background-color: {color};"
+          onclick={() => selectColor(color)}
+          title={color}
+          aria-label={`Color ${color}`}
+          aria-pressed={currentColor === color}
+        ></button>
+      {/each}
+    </div>
+    <label class="custom-color">
+      <span>Custom</span>
+      <input
+        type="color"
+        class="color-picker"
+        value={currentColor}
+        oninput={(e) => (currentColor = e.currentTarget.value)}
+      />
+    </label>
+  {/snippet}
+</Popover>
+
+<!-- Width / font popover -->
+<Popover open={widthPopoverOpen} onClose={() => (widthPopoverOpen = false)} side="left" anchor={widthAnchor}>
+  {#snippet children()}
+    {#if currentTool === 'text'}
+      <Slider
+        label={$_('annotate.fontSize')}
+        value={fontSize}
+        min={12}
+        max={200}
+        suffix="px"
+        onInput={(v) => (fontSize = v)}
+      />
+    {:else}
+      <Slider
+        label={$_('annotate.strokeWidth')}
+        value={strokeWidth}
+        min={5}
+        max={100}
+        suffix="px"
+        onInput={(v) => (strokeWidth = v)}
+      />
+    {/if}
+  {/snippet}
+</Popover>
 
 <style lang="postcss">
+  /* ─── Rail-specific elements (color/width triggers, popover content) ─── */
+  :global(.rail-divider) {
+    width: 24px;
+    height: 1px;
+    background: var(--tk-border-default);
+    margin: 2px auto;
+    flex-shrink: 0;
+  }
+
+  @media (max-width: 767px) {
+    :global(.rail-divider) {
+      width: 1px;
+      height: 24px;
+      margin: auto 2px;
+    }
+  }
+
+  :global(.rail-color-trigger),
+  :global(.rail-width-trigger) {
+    appearance: none;
+    width: var(--tk-touch-min);
+    height: var(--tk-touch-min);
+    border: none;
+    border-radius: var(--tk-radius-lg);
+    background: transparent;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+    flex-shrink: 0;
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  @media (max-width: 767px) {
+    :global(.rail-color-trigger),
+    :global(.rail-width-trigger) {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--tk-radius-md);
+    }
+  }
+
+  :global(.rail-color-trigger:hover),
+  :global(.rail-width-trigger:hover) {
+    background: var(--tk-surface-hover);
+  }
+  :global(.rail-color-trigger:active),
+  :global(.rail-width-trigger:active) {
+    transform: scale(0.92);
+  }
+  :global(.rail-color-trigger.open),
+  :global(.rail-width-trigger.open) {
+    background: var(--tk-accent-soft);
+    box-shadow: 0 0 0 1px var(--tk-accent) inset;
+  }
+
+  :global(.color-swatch) {
+    display: inline-block;
+    width: 26px;
+    height: 26px;
+    border-radius: var(--tk-radius-full);
+    border: 2px solid;
+    box-shadow: var(--tk-shadow-sm), inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+  }
+
+  :global(.width-dot) {
+    display: inline-block;
+    background: currentColor;
+    border-radius: var(--tk-radius-full);
+    color: var(--tk-text-primary);
+    transition: width var(--tk-dur-quick) var(--tk-ease-out),
+      height var(--tk-dur-quick) var(--tk-ease-out);
+  }
+
+  :global(.font-label) {
+    font-family: var(--tk-font-sans);
+    font-weight: var(--tk-weight-bold);
+    font-size: 18px;
+    color: var(--tk-text-primary);
+    line-height: 1;
+  }
+
+  :global(.popover-title) {
+    font-size: var(--tk-text-2xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tk-tracking-wide);
+    color: var(--tk-text-tertiary);
+    font-weight: var(--tk-weight-semibold);
+    margin-bottom: var(--tk-space-2);
+  }
+
+  :global(.color-grid) {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: var(--tk-space-2);
+    margin-bottom: var(--tk-space-3);
+  }
+
+  :global(.color-btn-pop) {
+    appearance: none;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--tk-radius-full);
+    border: 2px solid transparent;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+    transition:
+      transform var(--tk-dur-quick) var(--tk-ease-spring),
+      box-shadow var(--tk-dur-quick) var(--tk-ease-out);
+    -webkit-tap-highlight-color: transparent;
+  }
+  :global(.color-btn-pop:hover) {
+    transform: scale(1.08);
+  }
+  :global(.color-btn-pop:active) {
+    transform: scale(0.92);
+  }
+  :global(.color-btn-pop.active) {
+    box-shadow: 0 0 0 2px var(--tk-bg-elevated),
+      0 0 0 4px var(--tk-accent);
+    transform: scale(1.06);
+  }
+
+  :global(.custom-color) {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--tk-space-3);
+    padding: var(--tk-space-2) var(--tk-space-3);
+    background: var(--tk-surface-1);
+    border-radius: var(--tk-radius-md);
+  }
+  :global(.custom-color span) {
+    font-size: var(--tk-text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tk-tracking-wide);
+    color: var(--tk-text-tertiary);
+    font-weight: var(--tk-weight-semibold);
+  }
+  :global(.custom-color .color-picker) {
+    width: 36px;
+    height: 36px;
+    border: none;
+    border-radius: var(--tk-radius-md);
+    padding: 0;
+    cursor: pointer;
+    background: transparent;
+  }
+  :global(.custom-color .color-picker::-webkit-color-swatch-wrapper) {
+    padding: 0;
+  }
+  :global(.custom-color .color-picker::-webkit-color-swatch) {
+    border-radius: var(--tk-radius-md);
+    border: 1.5px solid var(--tk-border-strong);
+  }
+
   .annotation-tool-overlay {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     cursor: crosshair;
     user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
 
     &.panning {
       cursor: grab;
     }
-
     &.panning:active {
       cursor: grabbing;
     }
-
     &.fill-mode {
       cursor: cell;
     }
-
     &.text-mode {
       cursor: text;
     }
-
     &.hovering-text,
     &.dragging-text {
       cursor: move;
     }
-
     &.hovering-resize,
     &.resizing-text {
       cursor: nwse-resize;
@@ -1528,10 +1716,7 @@
 
   .annotation-preview-canvas {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     pointer-events: none;
     z-index: 2;
 
@@ -1550,238 +1735,278 @@
 
   .annotation-selection-svg {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     pointer-events: none;
     z-index: 4;
   }
 
   .stamp-preview-canvas {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     pointer-events: none;
     z-index: 3;
   }
 
+  /* ─── Tool / control rows inside the Sheet ─── */
   .tool-group,
   .control-group {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-
-    @media (max-width: 767px) {
-      flex-direction: row;
-      align-items: center;
-      gap: 0.75rem;
-    }
+    gap: var(--tk-space-2);
+    margin-bottom: var(--tk-space-3);
+  }
+  .tool-group:last-child,
+  .control-group:last-child {
+    margin-bottom: 0;
   }
 
   .group-label {
-    font-size: 0.9rem;
-    color: #ccc;
-
-    @media (max-width: 767px) {
-      font-size: 0.75rem;
-      white-space: nowrap;
-      min-width: 50px;
-    }
+    font-size: var(--tk-text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tk-tracking-wide);
+    color: var(--tk-text-tertiary);
+    font-weight: var(--tk-weight-semibold);
   }
 
   .tool-buttons {
     display: flex;
-    gap: 0.5rem;
+    flex-wrap: wrap;
+    gap: var(--tk-space-1);
+    padding: var(--tk-space-1);
+    background: var(--tk-surface-1);
+    border-radius: var(--tk-radius-lg);
   }
 
   .tool-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 40px;
-    height: 40px;
-    background: #333;
-    border: 2px solid transparent;
-    border-radius: 8px;
-    color: #ccc;
+    display: grid;
+    place-items: center;
+    width: var(--tk-touch-min);
+    height: var(--tk-touch-min);
+    background: transparent;
+    border: none;
+    border-radius: var(--tk-radius-md);
+    color: var(--tk-text-secondary);
     cursor: pointer;
-    transition: all 0.2s;
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+    -webkit-tap-highlight-color: transparent;
   }
 
   .tool-btn:hover {
-    background: #444;
-    color: #fff;
+    background: var(--tk-surface-hover);
+    color: var(--tk-text-primary);
+  }
+  .tool-btn:active {
+    transform: scale(0.92);
   }
 
   .tool-btn.active {
-    background: var(--primary-color, #63b97b);
-    border-color: var(--primary-color, #63b97b);
-    color: #fff;
+    background: var(--tk-bg-elevated);
+    color: var(--tk-accent);
+    box-shadow: var(--tk-shadow-xs);
   }
 
   .eraser-mode-buttons {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--tk-space-1);
+    padding: var(--tk-space-1);
+    background: var(--tk-surface-1);
+    border-radius: var(--tk-radius-lg);
   }
 
   .mode-btn {
-    padding: 0.4rem 0.75rem;
-    background: #333;
-    border: 2px solid transparent;
-    border-radius: 6px;
-    color: #ccc;
+    flex: 1;
+    appearance: none;
+    background: transparent;
+    border: none;
+    padding: 0 var(--tk-space-3);
+    height: 34px;
+    border-radius: var(--tk-radius-md);
+    color: var(--tk-text-tertiary);
     cursor: pointer;
-    font-size: 0.8rem;
-    transition: all 0.2s;
+    font-family: inherit;
+    font-size: var(--tk-text-xs);
+    font-weight: var(--tk-weight-semibold);
+    text-transform: uppercase;
+    letter-spacing: var(--tk-tracking-wide);
+    transition: background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out);
+    -webkit-tap-highlight-color: transparent;
   }
-
   .mode-btn:hover {
-    background: #444;
-    color: #fff;
+    color: var(--tk-text-secondary);
   }
-
   .mode-btn.active {
-    background: var(--primary-color, #63b97b);
-    border-color: var(--primary-color, #63b97b);
-    color: #fff;
+    background: var(--tk-bg-elevated);
+    color: var(--tk-text-primary);
+    box-shadow: var(--tk-shadow-xs);
   }
 
+  /* ─── Color palette ─── */
   .color-presets {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: var(--tk-space-2);
     align-items: center;
   }
 
   .color-btn {
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--tk-radius-full);
     border: 2px solid transparent;
     cursor: pointer;
-    transition: all 0.2s;
+    transition:
+      transform var(--tk-dur-quick) var(--tk-ease-spring),
+      box-shadow var(--tk-dur-quick) var(--tk-ease-out);
+    -webkit-tap-highlight-color: transparent;
+    position: relative;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.18);
   }
 
   .color-btn:hover {
-    transform: scale(1.1);
+    transform: scale(1.08);
+  }
+  .color-btn:active {
+    transform: scale(0.92);
   }
 
   .color-btn.active {
-    border-color: #fff;
-    box-shadow: 0 0 0 2px var(--primary-color, #63b97b);
+    box-shadow: 0 0 0 2px var(--tk-bg-elevated),
+      0 0 0 4px var(--tk-accent);
+    transform: scale(1.06);
   }
 
   .color-picker {
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     border: none;
-    border-radius: 50%;
+    border-radius: var(--tk-radius-full);
     padding: 0;
     cursor: pointer;
     background: transparent;
   }
-
-  .color-picker::-webkit-color-swatch-wrapper {
-    padding: 0;
-  }
-
+  .color-picker::-webkit-color-swatch-wrapper { padding: 0; }
   .color-picker::-webkit-color-swatch {
-    border-radius: 50%;
-    border: 1px solid #666;
+    border-radius: var(--tk-radius-full);
+    border: 1.5px solid var(--tk-border-strong);
   }
 
+  /* ─── Sliders for stroke width / font size ─── */
   .control-group label {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 0.9rem;
-    color: #ccc;
-
-    @media (max-width: 767px) {
-      font-size: 0.75rem;
-      gap: 0.5rem;
-    }
+    font-size: var(--tk-text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tk-tracking-wide);
+    color: var(--tk-text-tertiary);
+    font-weight: var(--tk-weight-semibold);
   }
 
   .control-group .value {
-    font-weight: 600;
+    font-weight: var(--tk-weight-semibold);
+    color: var(--tk-accent);
+    font-variant-numeric: tabular-nums;
+    text-transform: none;
+    letter-spacing: 0;
   }
 
   .control-group input[type='range'] {
     width: 100%;
-    height: 6px;
-    background: #444;
-    border-radius: 3px;
-    outline: none;
+    height: var(--tk-touch-min);
+    background: transparent;
+    appearance: none;
+    -webkit-appearance: none;
     cursor: pointer;
+    margin: 0;
+    touch-action: pan-y;
+    --tk-track: var(--tk-surface-2);
+  }
 
-    @media (max-width: 767px) {
-      width: 80px;
-      flex-shrink: 0;
-    }
+  .control-group input[type='range']::-webkit-slider-runnable-track {
+    height: 6px;
+    background: var(--tk-surface-2);
+    border-radius: var(--tk-radius-full);
+  }
+  .control-group input[type='range']::-moz-range-track {
+    height: 6px;
+    background: var(--tk-surface-2);
+    border-radius: var(--tk-radius-full);
   }
 
   .control-group input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
     appearance: none;
-    width: 16px;
-    height: 16px;
-    background: var(--primary-color, #63b97b);
-    border-radius: 50%;
-    cursor: pointer;
-    transition: all 0.2s;
+    width: 22px;
+    height: 22px;
+    margin-top: -8px;
+    background: #fff;
+    border: 3px solid var(--tk-accent);
+    border-radius: var(--tk-radius-full);
+    cursor: grab;
+    box-shadow: var(--tk-shadow-md);
+    transition: transform var(--tk-dur-quick) var(--tk-ease-spring);
   }
-
   .control-group input[type='range']::-webkit-slider-thumb:hover {
-    transform: scale(1.1);
+    transform: scale(1.08);
   }
-
+  .control-group input[type='range']::-webkit-slider-thumb:active {
+    transform: scale(1.18);
+    cursor: grabbing;
+  }
   .control-group input[type='range']::-moz-range-thumb {
-    width: 16px;
-    height: 16px;
-    background: var(--primary-color, #63b97b);
-    border: none;
-    border-radius: 50%;
-    cursor: pointer;
-    transition: all 0.2s;
+    width: 22px;
+    height: 22px;
+    background: #fff;
+    border: 3px solid var(--tk-accent);
+    border-radius: var(--tk-radius-full);
+    cursor: grab;
+    box-shadow: var(--tk-shadow-md);
   }
 
+  /* ─── Buttons inside the panel ─── */
   .btn {
-    padding: 0.5rem 1rem;
+    appearance: none;
     border: none;
-    border-radius: 4px;
     cursor: pointer;
-    font-size: 0.9rem;
-    transition: all 0.2s;
-
-    @media (max-width: 767px) {
-      padding: 0.4rem 0.75rem;
-      font-size: 0.75rem;
-    }
+    font-family: inherit;
+    font-size: var(--tk-text-sm);
+    font-weight: var(--tk-weight-semibold);
+    padding: 0 var(--tk-space-4);
+    height: var(--tk-touch-min);
+    border-radius: var(--tk-radius-full);
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+    -webkit-tap-highlight-color: transparent;
   }
-
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-danger {
-    background: #cc3333;
-    color: #fff;
+    background: var(--tk-danger-soft);
+    color: var(--tk-danger);
   }
-
   .btn-danger:hover:not(:disabled) {
-    background: #dd4444;
+    background: var(--tk-danger);
+    color: var(--tk-text-on-accent);
+  }
+  .btn-danger:active:not(:disabled) {
+    transform: scale(0.96);
   }
 
+  /* ─── Toggle (shadow / ignore background) ─── */
   .toggle-label {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    font-size: 0.9rem;
-    color: #ccc;
+    gap: var(--tk-space-3);
+    font-size: var(--tk-text-sm);
+    color: var(--tk-text-secondary);
+    font-weight: var(--tk-weight-medium);
   }
 
   .toggle-btn {
@@ -1789,37 +2014,41 @@
     border: none;
     padding: 0;
     cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    flex-shrink: 0;
   }
 
   .toggle-track {
     display: block;
-    width: 44px;
-    height: 24px;
-    background: #444;
-    border-radius: 12px;
+    width: 46px;
+    height: 28px;
+    background: var(--tk-surface-3);
+    border-radius: var(--tk-radius-full);
     position: relative;
-    transition: background 0.2s;
+    transition: background var(--tk-dur-quick) var(--tk-ease-out);
   }
 
   .toggle-btn.active .toggle-track {
-    background: var(--primary-color, #63b97b);
+    background: var(--tk-accent);
   }
 
   .toggle-thumb {
     position: absolute;
     top: 2px;
     left: 2px;
-    width: 20px;
-    height: 20px;
+    width: 24px;
+    height: 24px;
     background: #fff;
-    border-radius: 50%;
-    transition: transform 0.2s;
+    border-radius: var(--tk-radius-full);
+    box-shadow: var(--tk-shadow-sm);
+    transition: transform var(--tk-dur-medium) var(--tk-ease-spring);
   }
 
   .toggle-btn.active .toggle-thumb {
-    transform: translateX(20px);
+    transform: translateX(18px);
   }
 
+  /* ─── Inline text input (text annotation) ─── */
   .text-input-container {
     position: absolute;
     z-index: 10;
@@ -1827,18 +2056,21 @@
   }
 
   .text-input {
-    background: rgba(0, 0, 0, 0.7);
-    border: 2px solid var(--primary-color, #63b97b);
-    border-radius: 4px;
-    padding: 4px 8px;
-    min-width: 100px;
+    background: var(--tk-bg-glass-strong);
+    backdrop-filter: var(--tk-blur-sm);
+    -webkit-backdrop-filter: var(--tk-blur-sm);
+    border: 2px solid var(--tk-accent);
+    border-radius: var(--tk-radius-md);
+    padding: var(--tk-space-1) var(--tk-space-2);
+    min-width: 120px;
     max-width: 400px;
-    font-weight: bold;
+    font-weight: var(--tk-weight-bold);
     outline: none;
+    color: var(--tk-text-primary);
 
     &::placeholder {
-      color: rgba(255, 255, 255, 0.5);
-      font-weight: normal;
+      color: var(--tk-text-tertiary);
+      font-weight: var(--tk-weight-regular);
     }
   }
 </style>

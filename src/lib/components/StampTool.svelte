@@ -4,7 +4,18 @@
   import type { StampArea, Viewport, TransformState, CropArea, StampAsset } from '../types';
   import { STAMP_ASSETS } from '../config/stamps';
   import { preloadStampImage } from '../utils/canvas';
-  import { RotateCw, Trash2 } from 'lucide-svelte';
+  import { RotateCw, Trash2, X, Sticker } from 'lucide-svelte';
+  import FloatingRail from './FloatingRail.svelte';
+  import RailButton from './RailButton.svelte';
+  import Popover from './Popover.svelte';
+  import { haptic } from '../utils/haptics';
+
+  // Stamp picker popover state
+  let pickerOpen = $state(false);
+  let pickerAnchor = $state<HTMLElement | null>(null);
+  function togglePicker() {
+    pickerOpen = !pickerOpen;
+  }
 
   interface Props {
     canvas: HTMLCanvasElement | null;
@@ -474,26 +485,6 @@
 />
 
 <div class="stamp-tool">
-  <div class="stamp-palette">
-    <h3>{$_('editor.selectStamp') || 'Select Stamp'}</h3>
-    <div class="stamp-grid">
-      {#each STAMP_ASSETS as asset}
-        <button
-          class="stamp-item"
-          class:selected={selectedStampAsset?.id === asset.id}
-          onclick={() => selectStampAsset(asset)}
-          title={asset.id}
-        >
-          {#if asset.type === 'emoji'}
-            <span class="emoji">{asset.content}</span>
-          {:else}
-            <img src={asset.preview || asset.content} alt={asset.id} />
-          {/if}
-        </button>
-      {/each}
-    </div>
-  </div>
-
   <div
     bind:this={overlayElement}
     class="stamp-canvas-overlay"
@@ -517,9 +508,9 @@
               width={canvasStamp.canvasWidth}
               height={canvasStamp.canvasHeight}
               fill="none"
-              stroke={isSelected ? 'var(--primary-color, #63b97b)' : '#ffffff'}
-              stroke-width="2"
-              stroke-dasharray={isSelected ? '0' : '5,5'}
+              stroke={isSelected ? '#0a84ff' : 'rgba(255,255,255,0.8)'}
+              stroke-width={isSelected ? '2.5' : '1.5'}
+              stroke-dasharray={isSelected ? '0' : '6,4'}
             />
           </g>
 
@@ -531,11 +522,11 @@
               <circle
                 cx={handle.x}
                 cy={handle.y}
-                r="6"
-                fill="var(--primary-color, #63b97b)"
-                stroke="#fff"
-                stroke-width="2"
-                style="pointer-events: all; cursor: {cursor};"
+                r="11"
+                fill="#ffffff"
+                stroke="#0a84ff"
+                stroke-width="3"
+                style="pointer-events: all; cursor: {cursor}; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35));"
               />
             {/each}
 
@@ -543,16 +534,16 @@
             <circle
               cx={rotHandle.x}
               cy={rotHandle.y}
-              r="8"
-              fill="#00cc00"
-              stroke="#fff"
-              stroke-width="2"
-              style="pointer-events: all; cursor: grab;"
+              r="14"
+              fill="#0a84ff"
+              stroke="#ffffff"
+              stroke-width="3"
+              style="pointer-events: all; cursor: grab; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35));"
             />
             <g transform="translate({rotHandle.x}, {rotHandle.y})">
-              <foreignObject x="-8" y="-8" width="16" height="16" style="pointer-events: none;">
-                <div style="color: white; width: 16px; height: 16px; display: flex; align-items: center; justify-content: center;">
-                  <RotateCw size={12} />
+              <foreignObject x="-9" y="-9" width="18" height="18" style="pointer-events: none;">
+                <div style="color: white; width: 18px; height: 18px; display: flex; align-items: center; justify-content: center;">
+                  <RotateCw size={13} strokeWidth={2.4} />
                 </div>
               </foreignObject>
             </g>
@@ -562,123 +553,128 @@
     {/if}
   </div>
 
-  <div class="stamp-controls">
-    {#if selectedStampId}
-      <button class="control-btn delete" onclick={handleDeleteStamp}>
-        <Trash2 size={16} />
-        <span>{$_('editor.delete')}</span>
+  <FloatingRail side="right">
+    {#snippet top()}
+      <RailButton label={$_('editor.close')} variant="default" haptics="light" onclick={onClose}>
+        <X size={20} strokeWidth={2.2} />
+      </RailButton>
+    {/snippet}
+
+    {#snippet children()}
+      <button
+        bind:this={pickerAnchor}
+        type="button"
+        class="rail-color-trigger"
+        class:open={pickerOpen}
+        aria-label={$_('editor.selectStamp')}
+        title={$_('editor.selectStamp')}
+        onclick={togglePicker}
+      >
+        <Sticker size={20} strokeWidth={1.8} />
       </button>
-    {/if}
-    <button class="control-btn" onclick={onClose}>
-      {$_('editor.close')}
-    </button>
-  </div>
+    {/snippet}
+
+    {#snippet bottom()}
+      <RailButton
+        label={$_('editor.delete')}
+        variant="danger"
+        disabled={!selectedStampId}
+        haptics="warning"
+        onclick={handleDeleteStamp}
+      >
+        <Trash2 size={18} strokeWidth={1.8} />
+      </RailButton>
+    {/snippet}
+  </FloatingRail>
+
+  <Popover open={pickerOpen} onClose={() => (pickerOpen = false)} side="left" anchor={pickerAnchor}>
+    {#snippet children()}
+      <div class="popover-title">{$_('editor.selectStamp')}</div>
+      <div class="stamp-grid-pop">
+        {#each STAMP_ASSETS as asset}
+          <button
+            class="stamp-item-pop"
+            class:selected={selectedStampAsset?.id === asset.id}
+            onclick={() => { haptic('selection'); selectStampAsset(asset); pickerOpen = false; }}
+            title={asset.id}
+            aria-label={`Stamp ${asset.id}`}
+            aria-pressed={selectedStampAsset?.id === asset.id}
+          >
+            {#if asset.type === 'emoji'}
+              <span class="emoji">{asset.content}</span>
+            {:else}
+              <img src={asset.preview || asset.content} alt={asset.id} />
+            {/if}
+          </button>
+        {/each}
+      </div>
+    {/snippet}
+  </Popover>
 </div>
 
 <style lang="postcss">
   .stamp-tool {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     pointer-events: none;
-
-    @media (max-width: 767px) {
-
-    }
   }
 
-  .stamp-palette {
-    position: absolute;
-    top: 1rem;
-    right: 1rem;
-    background: rgba(30, 30, 30, 0.95);
-    border: 1px solid #444;
-    border-radius: 8px;
-    padding: 1rem;
-    width: 280px;
-    max-height: 400px;
-    overflow-y: auto;
-    pointer-events: all;
-    backdrop-filter: blur(10px);
-    z-index: 1;
-
-    @media (max-width: 767px) {
-      top: auto;
-      bottom: 0;
-      right: 0;
-      left: 0;
-      width: auto;
-    }
-  }
-
-  .stamp-palette h3 {
-    margin: 0 0 1rem 0;
-    font-size: 1rem;
-    color: #fff;
-
-    @media (max-width: 767px) {
-      display: none;
-    }
-  }
-
-  .stamp-grid {
+  :global(.stamp-grid-pop) {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 0.5rem;
-
-    @media (max-width: 767px) {
-      display: flex;
-    }
+    gap: var(--tk-space-2);
+    max-height: 60dvh;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--tk-surface-3) transparent;
   }
 
-  .stamp-item {
-    width: 60px;
-    height: 60px;
-    background: #333;
-    border: 2px solid #444;
-    border-radius: 4px;
+  :global(.stamp-item-pop) {
+    appearance: none;
+    width: 56px;
+    height: 56px;
+    background: var(--tk-surface-1);
+    border: 1.5px solid var(--tk-border-subtle);
+    border-radius: var(--tk-radius-lg);
     cursor: pointer;
-    transition: all 0.2s;
-    display: flex;
-    align-items: center;
-    justify-content: center;
+    display: grid;
+    place-items: center;
     padding: 0;
-
-    @media (max-width: 767px) {
-      flex-shrink: 0;
-    }
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      border-color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+    -webkit-tap-highlight-color: transparent;
   }
 
-  .stamp-item:hover {
-    background: #444;
-    border-color: #666;
+  :global(.stamp-item-pop:hover) {
+    background: var(--tk-surface-2);
+    border-color: var(--tk-border-strong);
   }
-
-  .stamp-item.selected {
-    background: var(--primary-color, #63b97b);
-    border-color: var(--primary-color, #63b97b);
+  :global(.stamp-item-pop:active) {
+    transform: scale(0.94);
   }
-
-  .stamp-item .emoji {
-    font-size: 2rem;
+  :global(.stamp-item-pop.selected) {
+    background: var(--tk-accent-soft);
+    border-color: var(--tk-accent);
   }
-
-  .stamp-item img {
-    max-width: 90%;
-    max-height: 90%;
+  :global(.stamp-item-pop .emoji) {
+    font-size: 32px;
+    line-height: 1;
+  }
+  :global(.stamp-item-pop img) {
+    max-width: 80%;
+    max-height: 80%;
   }
 
   .stamp-canvas-overlay {
     position: absolute;
-    top: 0;
-    left: 0;
-    width: 100%;
-    height: 100%;
+    inset: 0;
     pointer-events: all;
     user-select: none;
+    -webkit-user-select: none;
     cursor: grab;
+    touch-action: none;
   }
 
   .stamp-canvas-overlay:active {
@@ -694,54 +690,5 @@
   .stamp-svg circle,
   .stamp-svg rect {
     pointer-events: all;
-  }
-
-  .stamp-controls {
-    position: absolute;
-    bottom: 20px;
-    right: 20px;
-    display: flex;
-    gap: 0.5rem;
-    pointer-events: all;
-  }
-
-  .control-btn {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    background: #333;
-    color: #fff;
-    border: 1px solid #444;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-
-  .control-btn:hover {
-    background: #444;
-    border-color: #555;
-  }
-
-  .control-btn.delete {
-    background: #cc0000;
-    border-color: #dd0000;
-  }
-
-  .control-btn.delete:hover {
-    background: #dd0000;
-    border-color: #ee0000;
-  }
-
-  /* Larger touch targets for mobile */
-  @media (max-width: 767px) {
-    .stamp-svg circle {
-      r: 12 !important;
-      stroke-width: 3 !important;
-    }
-
-    .stamp-svg circle[fill="#00cc00"] {
-      r: 14 !important;
-    }
   }
 </style>

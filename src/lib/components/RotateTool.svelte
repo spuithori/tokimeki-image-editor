@@ -3,6 +3,7 @@
   import { RotateCw, RotateCcw, FlipHorizontal, FlipVertical } from 'lucide-svelte';
   import type { TransformState } from '../types';
   import ToolPanel from './ToolPanel.svelte';
+  import { haptic } from '../utils/haptics';
 
   interface Props {
     transform: TransformState;
@@ -13,24 +14,27 @@
   let { transform, onChange, onClose }: Props = $props();
 
   function rotateLeft() {
+    haptic('light');
     const newRotation = (transform.rotation - 90 + 360) % 360;
     onChange({ rotation: newRotation });
   }
 
   function rotateRight() {
+    haptic('light');
     const newRotation = (transform.rotation + 90) % 360;
     onChange({ rotation: newRotation });
   }
 
   function toggleFlipHorizontal() {
+    haptic(transform.flipHorizontal ? 'toggleOff' : 'toggleOn');
     onChange({ flipHorizontal: !transform.flipHorizontal });
   }
 
   function toggleFlipVertical() {
+    haptic(transform.flipVertical ? 'toggleOff' : 'toggleOn');
     onChange({ flipVertical: !transform.flipVertical });
   }
 
-  // Prevent wheel events from propagating to canvas zoom handler
   function handleWheel(e: WheelEvent) {
     e.stopPropagation();
   }
@@ -39,43 +43,43 @@
 <div class="rotate-tool" onwheel={handleWheel}>
   <ToolPanel title={$_('editor.rotate')} {onClose}>
     {#snippet children()}
-      <div class="tool-group">
-        <label>{$_('editor.rotate')}</label>
-        <div class="button-group">
-          <button class="tool-btn" onclick={rotateLeft} title={$_('editor.rotateLeft')}>
-            <RotateCcw size={20} />
-            <span>{$_('editor.rotateLeft')}</span>
+      <div class="section">
+        <div class="section-label">{$_('editor.rotate')}</div>
+        <div class="action-grid">
+          <button class="action-btn" onclick={rotateLeft} aria-label={$_('editor.rotateLeft')}>
+            <RotateCcw size={22} strokeWidth={1.8} />
+            <span>−90°</span>
           </button>
-          <button class="tool-btn" onclick={rotateRight} title={$_('editor.rotateRight')}>
-            <RotateCw size={20} />
-            <span>{$_('editor.rotateRight')}</span>
+          <button class="action-btn" onclick={rotateRight} aria-label={$_('editor.rotateRight')}>
+            <RotateCw size={22} strokeWidth={1.8} />
+            <span>+90°</span>
           </button>
         </div>
-        <div class="rotation-info">
-          Current: {transform.rotation}°
-        </div>
+        <div class="rotation-readout">{transform.rotation}°</div>
       </div>
 
-      <div class="tool-group">
-        <label>{$_('editor.flip')}</label>
-        <div class="button-group">
+      <div class="section">
+        <div class="section-label">{$_('editor.flip')}</div>
+        <div class="action-grid">
           <button
-            class="tool-btn"
+            class="action-btn"
             class:active={transform.flipHorizontal}
+            aria-pressed={transform.flipHorizontal}
             onclick={toggleFlipHorizontal}
-            title={$_('editor.flipHorizontal')}
+            aria-label={$_('editor.flipHorizontal')}
           >
-            <FlipHorizontal size={20} />
-            <span>{$_('editor.flipHorizontal')}</span>
+            <FlipHorizontal size={22} strokeWidth={1.8} />
+            <span>H</span>
           </button>
           <button
-            class="tool-btn"
+            class="action-btn"
             class:active={transform.flipVertical}
+            aria-pressed={transform.flipVertical}
             onclick={toggleFlipVertical}
-            title={$_('editor.flipVertical')}
+            aria-label={$_('editor.flipVertical')}
           >
-            <FlipVertical size={20} />
-            <span>{$_('editor.flipVertical')}</span>
+            <FlipVertical size={22} strokeWidth={1.8} />
+            <span>V</span>
           </button>
         </div>
       </div>
@@ -84,54 +88,72 @@
 </div>
 
 <style lang="postcss">
-  .rotate-tool {
+  .section {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: var(--tk-space-2);
+    margin-bottom: var(--tk-space-4);
+  }
+  .section:last-child {
+    margin-bottom: 0;
   }
 
-  .tool-group {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+  .section-label {
+    font-size: var(--tk-text-xs);
+    text-transform: uppercase;
+    letter-spacing: var(--tk-tracking-wide);
+    color: var(--tk-text-tertiary);
+    font-weight: var(--tk-weight-semibold);
   }
 
-  .tool-group label {
-    font-size: 0.9rem;
-    color: #ccc;
+  .action-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--tk-space-2);
   }
 
-  .button-group {
-    display: flex;
-    gap: 0.5rem;
-  }
-
-  .tool-btn {
-    display: flex;
+  .action-btn {
+    appearance: none;
+    display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
-    background: #333;
-    color: #fff;
-    border: 1px solid #444;
-    border-radius: 4px;
+    justify-content: center;
+    gap: var(--tk-space-2);
+    height: var(--tk-touch-default);
+    padding: 0 var(--tk-space-3);
+    background: var(--tk-surface-1);
+    color: var(--tk-text-secondary);
+    border: 1px solid var(--tk-border-subtle);
+    border-radius: var(--tk-radius-lg);
+    font-family: inherit;
+    font-size: var(--tk-text-base);
+    font-weight: var(--tk-weight-semibold);
     cursor: pointer;
-    transition: all 0.2s;
-    font-size: 0.9rem;
+    transition:
+      background var(--tk-dur-quick) var(--tk-ease-out),
+      color var(--tk-dur-quick) var(--tk-ease-out),
+      border-color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring);
+    -webkit-tap-highlight-color: transparent;
   }
 
-  .tool-btn:hover {
-    background: #444;
-    border-color: #555;
+  .action-btn:hover {
+    background: var(--tk-surface-2);
+    color: var(--tk-text-primary);
+  }
+  .action-btn:active {
+    transform: scale(0.96);
+  }
+  .action-btn.active {
+    background: var(--tk-accent-soft);
+    color: var(--tk-accent-hover);
+    border-color: var(--tk-accent);
   }
 
-  .tool-btn.active {
-    background: var(--primary-color, #63b97b);
-    border-color: var(--primary-color, #63b97b);
-  }
-
-  .rotation-info {
-    font-size: 0.85rem;
-    color: #999;
+  .rotation-readout {
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+    color: var(--tk-text-tertiary);
+    font-size: var(--tk-text-sm);
+    margin-top: var(--tk-space-1);
   }
 </style>

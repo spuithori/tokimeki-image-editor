@@ -485,146 +485,136 @@
 </div>
 
 <style lang="postcss">
-  .filter-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 120px);
-    gap: 1rem;
-    padding-bottom: 1rem;
-
-    @media (max-width: 767px) {
-      grid-template-columns: repeat(3, 1fr);
-      gap: 0.5rem;
-    }
+  .filter-tool {
+    display: contents;
   }
 
-  .filter-card {
-    display: flex;
-    flex-direction: column;
-    padding: 0;
-    background: #333;
-    border: 2px solid #444;
-    border-radius: 8px;
-    cursor: pointer;
-    transition: all 0.2s;
-    overflow: hidden;
-    flex: 0 0 auto;
-
-    @media (max-width: 767px) {
-      border-width: 1px;
-    }
+  .filter-info {
+    padding: var(--tk-space-3);
+    background: var(--tk-accent-soft);
+    border-radius: var(--tk-radius-md);
+    margin-bottom: var(--tk-space-3);
   }
 
-  .filter-card:hover {
-    border-color: #555;
-  }
-
-  .filter-card.active {
-    border-color: #0066cc;
-  }
-
-  .filter-preview {
-    position: relative;
-    width: 120px;
-    height: 120px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-
-    @media (max-width: 767px) {
-      width: 100%;
-      height: 0;
-      padding-bottom: 100%;
-    }
-  }
-
-  .preview-image {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    display: block;
-
-    @media (max-width: 767px) {
-      position: absolute;
-      top: 0;
-      left: 0;
-    }
-  }
-
-  .filter-name-loading {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: #fff;
-    text-align: center;
-    padding: 1rem;
-
-    @media (max-width: 767px) {
-      position: absolute;
-      top: 50%;
-      left: 50%;
-      transform: translate(-50%, -50%);
-      padding: 0.5rem;
-      font-size: 0.75rem;
-    }
-  }
-
-  .filter-name-overlay {
-    position: absolute;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0.6) 50%, transparent 100%);
-    color: #fff;
-    padding: 0.5rem 0.25rem 0.25rem;
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-align: center;
-    pointer-events: none;
-
-    @media (max-width: 767px) {
-      font-size: 0.65rem;
-      padding: 0.3rem 0.2rem 0.2rem;
-    }
+  .info-text {
+    margin: 0;
+    font-size: var(--tk-text-xs);
+    line-height: var(--tk-leading-snug);
+    color: var(--tk-text-secondary);
   }
 
   .loading-message {
     text-align: center;
-    padding: 1rem;
-    color: #999;
-    font-size: 0.9rem;
+    padding: var(--tk-space-3);
+    color: var(--tk-text-tertiary);
+    font-size: var(--tk-text-sm);
+  }
+  .loading-message p { margin: 0; }
+
+  .filter-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--tk-space-2);
   }
 
-  .loading-message p {
-    margin: 0;
+  .filter-card {
+    appearance: none;
+    display: block;
+    padding: 0;
+    background: var(--tk-surface-1);
+    border: 1.5px solid var(--tk-border-subtle);
+    border-radius: var(--tk-radius-lg);
+    cursor: pointer;
+    overflow: hidden;
+    -webkit-tap-highlight-color: transparent;
+    transition:
+      border-color var(--tk-dur-quick) var(--tk-ease-out),
+      transform var(--tk-dur-quick) var(--tk-ease-spring),
+      box-shadow var(--tk-dur-quick) var(--tk-ease-out);
+  }
+
+  .filter-card:hover {
+    border-color: var(--tk-border-strong);
+    transform: translateY(-1px);
+  }
+  .filter-card:active {
+    transform: scale(0.97);
+  }
+
+  .filter-card.active {
+    border-color: var(--tk-accent);
+    box-shadow: var(--tk-accent-glow);
+    transform: translateY(-1px);
+  }
+
+  .filter-preview {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1;
+    overflow: hidden;
+    background: var(--tk-surface-inset);
+  }
+
+  .preview-image {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .filter-name-overlay {
+    position: absolute;
+    inset: auto 0 0 0;
+    background: linear-gradient(
+      to top,
+      rgba(0, 0, 0, 0.78) 0%,
+      rgba(0, 0, 0, 0.4) 60%,
+      transparent 100%
+    );
+    color: var(--tk-text-primary);
+    padding: var(--tk-space-3) var(--tk-space-2) var(--tk-space-1);
+    font-size: var(--tk-text-2xs);
+    font-weight: var(--tk-weight-semibold);
+    letter-spacing: var(--tk-tracking-wide);
+    text-align: center;
+    text-transform: uppercase;
+    pointer-events: none;
+  }
+
+  .filter-name-loading {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--tk-space-2);
+    color: var(--tk-text-secondary);
+    font-size: var(--tk-text-xs);
+    text-align: center;
+    padding: var(--tk-space-2);
   }
 
   .loading-spinner {
     width: 16px;
     height: 16px;
-    border: 2px solid #444;
-    border-top-color: #0066cc;
-    border-radius: 50%;
+    border: 2px solid var(--tk-surface-3);
+    border-top-color: var(--tk-accent);
+    border-radius: var(--tk-radius-full);
     animation: spin 0.8s linear infinite;
   }
 
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
-  .filter-info {
-    padding: 0.75rem;
-    background: rgba(0, 102, 204, 0.1);
-    border-left: 3px solid var(--primary-color, #63b97b);
-    border-radius: 4px;
-  }
-
-  .info-text {
-    margin: 0;
-    font-size: 0.85rem;
-    color: #ccc;
+  @media (min-width: 768px) {
+    .filter-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
   }
 </style>

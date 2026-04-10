@@ -5,12 +5,13 @@
  * even with many annotations, fill operations, and eraser strokes.
  *
  * Architecture:
- * - committedCanvas: Pre-rendered cache of all finalized annotations
+ * - committedCanvas: Pre-rendered cache of all finalized annotations (sized to fit full scaled image)
  * - currentStroke: Only the in-progress stroke (rendered on top in real-time)
  * - Incremental updates: New strokes are added to cache without full rebuild
- * - Cache invalidation: Only eraser strokes and deletions trigger full rebuild
- * - Spatial indexing: O(log n) viewport culling for 100,000+ strokes
- * - LOD system: Point reduction at low zoom levels
+ * - Cache invalidation: Only zoom changes, eraser strokes and deletions trigger full rebuild
+ * - Pan optimization: Cache is translated without re-rendering
+ * - LOD system: Point reduction at low zoom levels (LRU cached)
+ * - Spatial indexing utilities: Available for future viewport culling optimization
  */
 
 import type { Annotation, AnnotationPoint, Viewport, CropArea } from '../types';
@@ -179,9 +180,13 @@ export function canDoIncrementalUpdate(
   return !addedAnnotations.some(a => a.type === 'eraser-stroke');
 }
 
-// Cache for LOD-simplified points: Map<annotationId:tolerance:pointCount, simplifiedPoints>
+// LRU Cache for LOD-simplified points
+// Map preserves insertion order, so we can implement LRU by:
+// - Moving accessed entries to end (delete + re-insert)
+// - Pruning from beginning (oldest entries)
 const lodCache = new Map<string, AnnotationPoint[]>();
 const LOD_CACHE_MAX_SIZE = 500;
+const LOD_CACHE_PRUNE_COUNT = 100;
 
 /**
  * Clear LOD cache (call when annotations are modified)
@@ -191,14 +196,33 @@ export function clearLodCache(): void {
 }
 
 /**
- * Prune LOD cache to prevent memory bloat
+ * Get from LRU cache with access tracking
  */
-function pruneLodCacheIfNeeded(): void {
+function lodCacheGet(key: string): AnnotationPoint[] | undefined {
+  const value = lodCache.get(key);
+  if (value !== undefined) {
+    // Move to end (most recently used)
+    lodCache.delete(key);
+    lodCache.set(key, value);
+  }
+  return value;
+}
+
+/**
+ * Set in LRU cache with size limit enforcement
+ */
+function lodCacheSet(key: string, value: AnnotationPoint[]): void {
+  // If key exists, delete first to update position
+  if (lodCache.has(key)) {
+    lodCache.delete(key);
+  }
+  lodCache.set(key, value);
+
+  // Prune oldest entries if over limit
   if (lodCache.size > LOD_CACHE_MAX_SIZE) {
-    // Remove oldest entries (first 100)
-    const keysToDelete = Array.from(lodCache.keys()).slice(0, 100);
-    for (const key of keysToDelete) {
-      lodCache.delete(key);
+    const keysToDelete = Array.from(lodCache.keys()).slice(0, LOD_CACHE_PRUNE_COUNT);
+    for (const k of keysToDelete) {
+      lodCache.delete(k);
     }
   }
 }
@@ -213,17 +237,16 @@ function applyLODToPoints(points: AnnotationPoint[], zoom: number, annotationId?
   const lod = getLODLevel(zoom);
   const tolerance = lod.simplifyTolerance;
 
-  // Use cache if available (include point count in key to handle drawing updates)
+  // Use LRU cache if annotationId provided
   if (annotationId) {
     const cacheKey = `${annotationId}:${tolerance}:${points.length}`;
-    const cached = lodCache.get(cacheKey);
+    const cached = lodCacheGet(cacheKey);
     if (cached && cached.length > 0) {
       return cached;
     }
 
     const simplified = simplifyPath(points, tolerance);
-    lodCache.set(cacheKey, simplified);
-    pruneLodCacheIfNeeded();
+    lodCacheSet(cacheKey, simplified);
     return simplified;
   }
 
@@ -694,14 +717,14 @@ export function updateAnnotationCache(
   const originX = (0 - cropOffsetX - sourceWidth / 2) * totalScale + cacheCenterX;
   const originY = (0 - cropOffsetY - sourceHeight / 2) * totalScale + cacheCenterY;
 
-  // Create or resize canvas if needed
+  // Reuse existing canvas if possible, resize if needed
   let committedCanvas = state.committedCanvas;
-  const needsResize = !committedCanvas ||
-    state.cacheWidth !== cacheWidth ||
-    state.cacheHeight !== cacheHeight;
-
-  if (needsResize) {
+  if (!committedCanvas) {
     committedCanvas = document.createElement('canvas');
+  }
+
+  // Resize canvas if dimensions changed (this also clears the canvas)
+  if (committedCanvas.width !== cacheWidth || committedCanvas.height !== cacheHeight) {
     committedCanvas.width = cacheWidth;
     committedCanvas.height = cacheHeight;
   }

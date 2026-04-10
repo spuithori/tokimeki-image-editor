@@ -29,7 +29,10 @@
     "noImage": "画像が読み込まれていません",
     "undo": "元に戻す",
     "redo": "やり直す",
-    "selectStamp": "スタンプを選択"
+    "selectStamp": "スタンプを選択",
+    "acceptedFormats": "PNG · JPEG · WebP",
+    "doubleTapHint": "ダブルタップでズーム / 2本指で移動",
+    "openImage": "画像を開く"
   },
   "toolbar": {
     "crop": "トリミングツール",
