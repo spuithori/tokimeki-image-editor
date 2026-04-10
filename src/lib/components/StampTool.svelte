@@ -508,7 +508,7 @@
               width={canvasStamp.canvasWidth}
               height={canvasStamp.canvasHeight}
               fill="none"
-              stroke={isSelected ? '#0a84ff' : 'rgba(255,255,255,0.8)'}
+              stroke={isSelected ? 'var(--tk-accent)' : 'var(--tk-stamp-stroke-default)'}
               stroke-width={isSelected ? '2.5' : '1.5'}
               stroke-dasharray={isSelected ? '0' : '6,4'}
             />
@@ -523,8 +523,8 @@
                 cx={handle.x}
                 cy={handle.y}
                 r="11"
-                fill="#ffffff"
-                stroke="#0a84ff"
+                fill="var(--tk-handle-fill)"
+                stroke="var(--tk-handle-stroke)"
                 stroke-width="3"
                 style="pointer-events: all; cursor: {cursor}; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35));"
               />
@@ -535,8 +535,8 @@
               cx={rotHandle.x}
               cy={rotHandle.y}
               r="14"
-              fill="#0a84ff"
-              stroke="#ffffff"
+              fill="var(--tk-accent)"
+              stroke="var(--tk-handle-fill)"
               stroke-width="3"
               style="pointer-events: all; cursor: grab; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.35));"
             />

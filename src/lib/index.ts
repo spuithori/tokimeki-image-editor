@@ -10,7 +10,8 @@ export type {
   CropArea,
   TransformState,
   ExportOptions,
-  EditorState
+  EditorState,
+  Theme
 } from './types';
 
 // Utils

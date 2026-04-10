@@ -1,5 +1,7 @@
 export type EditorMode = 'crop' | 'rotate' | 'adjust' | 'filter' | 'blur' | 'stamp' | 'annotate' | 'export' | null;
 
+export type Theme = 'dark' | 'light' | 'system';
+
 export interface ImageData {
   original: HTMLImageElement | null;
   current: HTMLImageElement | null;

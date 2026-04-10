@@ -8,5 +8,8 @@ export default defineConfig({
 		wasm(),
 		topLevelAwait(),
 		sveltekit()
-	]
+	],
+	build: {
+		target: 'es2022'
+	}
 });

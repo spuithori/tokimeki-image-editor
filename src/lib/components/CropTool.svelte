@@ -198,7 +198,7 @@
   });
 
   // Derived SVG values that depend on canvasCoords
-  let gridStroke = $derived(isInteracting ? 'rgba(255, 255, 255, 0.55)' : 'rgba(255, 255, 255, 0.22)');
+  let gridStroke = $derived(isInteracting ? 'var(--tk-crop-grid-active)' : 'var(--tk-crop-grid)');
   let frameStrokeWidth = $derived(isInteracting ? 2 : 1.5);
   let edgeBarLenH = $derived(canvasCoords ? Math.max(20, canvasCoords.width / 3) : 0);
   let edgeBarLenV = $derived(canvasCoords ? Math.max(20, canvasCoords.height / 3) : 0);
@@ -765,7 +765,7 @@
     <rect
       width="100%"
       height="100%"
-      fill="rgba(0, 0, 0, 0.5)"
+      fill="var(--tk-overlay-dim)"
       mask="url(#crop-mask)"
       style="pointer-events: none;"
     />
@@ -777,7 +777,7 @@
       width={canvasCoords.width}
       height={canvasCoords.height}
       fill="transparent"
-      stroke="rgba(255, 255, 255, 0.85)"
+      stroke="var(--tk-crop-border)"
       stroke-width={frameStrokeWidth}
       style="pointer-events: all; cursor: grab;"
       onmousedown={(e) => handleMouseDown(e)}
@@ -830,7 +830,7 @@
       width={edgeBarLenH}
       height={barThickness}
       rx={barThickness / 2}
-      fill="#ffffff"
+      fill="var(--tk-handle-fill)"
       style="pointer-events: all; cursor: n-resize; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));"
       onmousedown={(e) => handleMouseDown(e, 'n')}
       ontouchstart={(e) => handleMouseDown(e, 'n')}
@@ -842,7 +842,7 @@
       width={edgeBarLenH}
       height={barThickness}
       rx={barThickness / 2}
-      fill="#ffffff"
+      fill="var(--tk-handle-fill)"
       style="pointer-events: all; cursor: s-resize; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));"
       onmousedown={(e) => handleMouseDown(e, 's')}
       ontouchstart={(e) => handleMouseDown(e, 's')}
@@ -854,7 +854,7 @@
       width={barThickness}
       height={edgeBarLenV}
       rx={barThickness / 2}
-      fill="#ffffff"
+      fill="var(--tk-handle-fill)"
       style="pointer-events: all; cursor: w-resize; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));"
       onmousedown={(e) => handleMouseDown(e, 'w')}
       ontouchstart={(e) => handleMouseDown(e, 'w')}
@@ -866,7 +866,7 @@
       width={barThickness}
       height={edgeBarLenV}
       rx={barThickness / 2}
-      fill="#ffffff"
+      fill="var(--tk-handle-fill)"
       style="pointer-events: all; cursor: e-resize; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));"
       onmousedown={(e) => handleMouseDown(e, 'e')}
       ontouchstart={(e) => handleMouseDown(e, 'e')}
@@ -876,7 +876,7 @@
     <!-- NW corner -->
     <path
       d="M {canvasCoords.x + cornerLen} {canvasCoords.y - cornerThickness / 2 + 0.5} L {canvasCoords.x - cornerThickness / 2 + 0.5} {canvasCoords.y - cornerThickness / 2 + 0.5} L {canvasCoords.x - cornerThickness / 2 + 0.5} {canvasCoords.y + cornerLen}"
-      stroke="#ffffff"
+      stroke="var(--tk-handle-fill)"
       stroke-width={cornerThickness}
       stroke-linecap="square"
       stroke-linejoin="miter"
@@ -897,7 +897,7 @@
     <!-- NE corner -->
     <path
       d="M {canvasCoords.x + canvasCoords.width - cornerLen} {canvasCoords.y - cornerThickness / 2 + 0.5} L {canvasCoords.x + canvasCoords.width + cornerThickness / 2 - 0.5} {canvasCoords.y - cornerThickness / 2 + 0.5} L {canvasCoords.x + canvasCoords.width + cornerThickness / 2 - 0.5} {canvasCoords.y + cornerLen}"
-      stroke="#ffffff"
+      stroke="var(--tk-handle-fill)"
       stroke-width={cornerThickness}
       stroke-linecap="square"
       stroke-linejoin="miter"
@@ -918,7 +918,7 @@
     <!-- SW corner -->
     <path
       d="M {canvasCoords.x + cornerLen} {canvasCoords.y + canvasCoords.height + cornerThickness / 2 - 0.5} L {canvasCoords.x - cornerThickness / 2 + 0.5} {canvasCoords.y + canvasCoords.height + cornerThickness / 2 - 0.5} L {canvasCoords.x - cornerThickness / 2 + 0.5} {canvasCoords.y + canvasCoords.height - cornerLen}"
-      stroke="#ffffff"
+      stroke="var(--tk-handle-fill)"
       stroke-width={cornerThickness}
       stroke-linecap="square"
       stroke-linejoin="miter"
@@ -939,7 +939,7 @@
     <!-- SE corner -->
     <path
       d="M {canvasCoords.x + canvasCoords.width - cornerLen} {canvasCoords.y + canvasCoords.height + cornerThickness / 2 - 0.5} L {canvasCoords.x + canvasCoords.width + cornerThickness / 2 - 0.5} {canvasCoords.y + canvasCoords.height + cornerThickness / 2 - 0.5} L {canvasCoords.x + canvasCoords.width + cornerThickness / 2 - 0.5} {canvasCoords.y + canvasCoords.height - cornerLen}"
-      stroke="#ffffff"
+      stroke="var(--tk-handle-fill)"
       stroke-width={cornerThickness}
       stroke-linecap="square"
       stroke-linejoin="miter"
@@ -1130,10 +1130,10 @@
     align-items: center;
     gap: var(--tk-space-2);
     padding: 6px 12px;
-    background: rgba(0, 0, 0, 0.7);
+    background: var(--tk-bg-glass-strong);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--tk-border-subtle);
     border-radius: var(--tk-radius-full);
     color: var(--tk-text-primary);
     font-family: var(--tk-font-mono);
@@ -1156,14 +1156,14 @@
   }
 
   .dim-num {
-    color: #fff;
+    color: var(--tk-text-primary);
     font-variant-numeric: tabular-nums;
   }
 
   .dim-ratio {
     color: var(--tk-accent-hover);
     padding-left: var(--tk-space-2);
-    border-left: 1px solid rgba(255, 255, 255, 0.18);
+    border-left: 1px solid var(--tk-border-strong);
     text-transform: uppercase;
   }
 

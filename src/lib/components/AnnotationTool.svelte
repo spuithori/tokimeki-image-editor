@@ -1256,7 +1256,7 @@
           width={handleSize}
           height={handleSize}
           fill="var(--primary-color, #63b97b)"
-          stroke="#fff"
+          stroke="var(--tk-handle-fill)"
           stroke-width="1"
           rx="2"
           class="resize-handle"
@@ -1284,7 +1284,7 @@
         width={handleSize}
         height={handleSize}
         fill="var(--primary-color, #63b97b)"
-        stroke="#fff"
+        stroke="var(--tk-handle-fill)"
         stroke-width="1"
         rx="2"
         class="resize-handle"
@@ -1383,7 +1383,7 @@
     >
       <span
         class="color-swatch"
-        style="background-color: {currentColor}; border-color: {currentColor === '#ffffff' ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.6)'}"
+        style="background-color: {currentColor}; border-color: var(--tk-border-default)"
       ></span>
     </button>
 
@@ -1589,7 +1589,7 @@
     height: 26px;
     border-radius: var(--tk-radius-full);
     border: 2px solid;
-    box-shadow: var(--tk-shadow-sm), inset 0 0 0 1px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--tk-shadow-sm), inset 0 0 0 1px var(--tk-border-default);
   }
 
   :global(.width-dot) {
@@ -1632,8 +1632,8 @@
     border-radius: var(--tk-radius-full);
     border: 2px solid transparent;
     cursor: pointer;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+    box-shadow: var(--tk-shadow-sm),
+      inset 0 0 0 1px var(--tk-border-strong);
     transition:
       transform var(--tk-dur-quick) var(--tk-ease-spring),
       box-shadow var(--tk-dur-quick) var(--tk-ease-out);
@@ -1863,8 +1863,8 @@
       box-shadow var(--tk-dur-quick) var(--tk-ease-out);
     -webkit-tap-highlight-color: transparent;
     position: relative;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4),
-      inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+    box-shadow: var(--tk-shadow-sm),
+      inset 0 0 0 1px var(--tk-border-strong);
   }
 
   .color-btn:hover {
@@ -1944,7 +1944,7 @@
     width: 22px;
     height: 22px;
     margin-top: -8px;
-    background: #fff;
+    background: var(--tk-slider-thumb);
     border: 3px solid var(--tk-accent);
     border-radius: var(--tk-radius-full);
     cursor: grab;
@@ -1961,7 +1961,7 @@
   .control-group input[type='range']::-moz-range-thumb {
     width: 22px;
     height: 22px;
-    background: #fff;
+    background: var(--tk-slider-thumb);
     border: 3px solid var(--tk-accent);
     border-radius: var(--tk-radius-full);
     cursor: grab;
@@ -2038,7 +2038,7 @@
     left: 2px;
     width: 24px;
     height: 24px;
-    background: #fff;
+    background: var(--tk-slider-thumb);
     border-radius: var(--tk-radius-full);
     box-shadow: var(--tk-shadow-sm);
     transition: transform var(--tk-dur-medium) var(--tk-ease-spring);

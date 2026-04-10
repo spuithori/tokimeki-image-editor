@@ -21,15 +21,15 @@
     margin: 0;
     padding: 0;
     font-family: sans-serif;
-    background: #050507;
-    color: #f5f5f7;
+    background: var(--tk-bg-canvas, #050507);
+    color: var(--tk-text-primary, #f5f5f7);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
     overscroll-behavior: none;
   }
 
   :global(html) {
-    background: #050507;
+    background: var(--tk-bg-canvas, #050507);
   }
 
   main {

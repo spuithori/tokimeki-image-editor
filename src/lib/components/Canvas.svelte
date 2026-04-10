@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { drawImage, preloadStampImage, applyStamps, applyAnnotations } from '../utils/canvas';
-  import { initWebGPUCanvas, uploadImageToGPU, renderWithAdjustments, cleanupWebGPU } from '../utils/webgpu-render';
+  import { initWebGPUCanvas, uploadImageToGPU, renderWithAdjustments, cleanupWebGPU, setCanvasClearColor } from '../utils/webgpu-render';
   import {
     createEditorInteractionState,
     handlePureMouseDown,
@@ -30,6 +30,7 @@
     stampAreas?: StampArea[];
     annotations?: Annotation[];
     skipAnnotations?: boolean;
+    theme?: 'dark' | 'light';
     onZoom?: (delta: number, centerX?: number, centerY?: number) => void;
     onViewportChange?: (viewportUpdate: Partial<Viewport>) => void;
   }
@@ -47,9 +48,21 @@
     stampAreas = [],
     annotations = [],
     skipAnnotations = false,
+    theme = 'dark',
     onZoom,
     onViewportChange
   }: Props = $props();
+
+  // Sync WebGPU clear color with theme
+  const CLEAR_COLORS = {
+    dark:  { r: 0, g: 0, b: 0, a: 1 },
+    light: { r: 0.98, g: 0.98, b: 0.98, a: 1 }, // #fafafa
+  } as const;
+
+  $effect(() => {
+    setCanvasClearColor(CLEAR_COLORS[theme]);
+    requestRender();
+  });
 
   // State
   let canvasElement = $state<HTMLCanvasElement | null>(null);
@@ -317,13 +330,13 @@
   }
   .editor-canvas {
     display: block;
-    background: transparent;
+    background: var(--tk-bg-canvas);
     cursor: grab;
     touch-action: none;
     user-select: none;
     -webkit-user-select: none;
     border-radius: var(--tk-radius-lg, 12px);
-    box-shadow: 0 24px 64px -16px rgba(0, 0, 0, 0.7);
+    box-shadow: 0 24px 64px -16px var(--tk-canvas-shadow);
   }
   .editor-canvas.panning {
     cursor: grabbing;
@@ -347,24 +360,24 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--tk-gpu-badge-bg);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
-    color: rgba(255, 255, 255, 0.8);
+    color: var(--tk-gpu-badge-text);
     padding: 4px 10px;
     border-radius: 999px;
     font-size: 10px;
     font-weight: 600;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid var(--tk-gpu-badge-border);
   }
   .gpu-badge::before {
     content: '';
     width: 6px;
     height: 6px;
     border-radius: 999px;
-    background: #30d158;
-    box-shadow: 0 0 6px rgba(48, 209, 88, 0.6);
+    background: var(--tk-success);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--tk-success) 60%, transparent);
   }
 </style>

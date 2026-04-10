@@ -20,8 +20,8 @@
     place-items: center;
     grid-auto-flow: row;
     gap: 1.25rem;
-    background: #050507;
-    color: rgba(245, 245, 247, 0.85);
+    background: var(--tk-bg-canvas, #050507);
+    color: var(--tk-text-secondary, rgba(245, 245, 247, 0.85));
     font-family: sans-serif;
     font-size: 12px;
     font-weight: 600;

@@ -179,7 +179,7 @@
     appearance: none;
     width: 22px;
     height: 22px;
-    background: #fff;
+    background: var(--tk-slider-thumb);
     border: 3px solid var(--tk-accent);
     border-radius: var(--tk-radius-full);
     cursor: grab;
@@ -201,7 +201,7 @@
   input[type='range']::-moz-range-thumb {
     width: 22px;
     height: 22px;
-    background: #fff;
+    background: var(--tk-slider-thumb);
     border: 3px solid var(--tk-accent);
     border-radius: var(--tk-radius-full);
     cursor: grab;

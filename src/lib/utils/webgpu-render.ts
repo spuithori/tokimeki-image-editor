@@ -11,6 +11,13 @@ const SHADER_CODE = IMAGE_EDITOR_SHADER_CODE;
  * Uses fragment shader to apply adjustments in real-time
  */
 
+// Canvas clear color (theme-aware: dark=#000, light=#fafafa)
+let canvasClearColor: GPUColor = { r: 0, g: 0, b: 0, a: 1 };
+
+export function setCanvasClearColor(color: GPUColor): void {
+  canvasClearColor = color;
+}
+
 // WebGPU state
 let gpuDevice: GPUDevice | null = null;
 let gpuContext: GPUCanvasContext | null = null;
@@ -408,7 +415,7 @@ export function renderWithAdjustments(
       const renderPass = commandEncoder.beginRenderPass({
         colorAttachments: [{
           view: textureView,
-          clearValue: { r: 0, g: 0, b: 0, a: 1 },
+          clearValue: canvasClearColor,
           loadOp: 'clear',
           storeOp: 'store',
         }],
@@ -814,7 +821,7 @@ function renderWithBlur(
     const renderPassGrain = commandEncoder.beginRenderPass({
       colorAttachments: [{
         view: canvasView,
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        clearValue: canvasClearColor,
         loadOp: 'clear',
         storeOp: 'store',
       }],
@@ -840,7 +847,7 @@ function renderWithBlur(
     const renderPassFinal = commandEncoder.beginRenderPass({
       colorAttachments: [{
         view: canvasView,
-        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        clearValue: canvasClearColor,
         loadOp: 'clear',
         storeOp: 'store',
       }],

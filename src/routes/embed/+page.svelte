@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { ImageEditor } from '$lib';
-  import { Pencil, Image as ImageIcon, RefreshCw } from 'lucide-svelte';
+  import { ImageEditor, type Theme } from '$lib';
+  import { Pencil, Image as ImageIcon, RefreshCw, Sun, Moon, Monitor } from 'lucide-svelte';
 
   let showEditor = $state(false);
+  let theme = $state<Theme>('dark');
   let selectedFile = $state<File | null>(null);
   let editedImageUrl = $state<string | null>(null);
   let fileInput: HTMLInputElement;
@@ -71,6 +72,21 @@
         </p>
       </header>
 
+      <div class="theme-switcher">
+        <button class="theme-btn" class:active={theme === 'dark'} onclick={() => theme = 'dark'} title="Dark">
+          <Moon size={14} strokeWidth={2.2} />
+          <span>Dark</span>
+        </button>
+        <button class="theme-btn" class:active={theme === 'light'} onclick={() => theme = 'light'} title="Light">
+          <Sun size={14} strokeWidth={2.2} />
+          <span>Light</span>
+        </button>
+        <button class="theme-btn" class:active={theme === 'system'} onclick={() => theme = 'system'} title="System">
+          <Monitor size={14} strokeWidth={2.2} />
+          <span>System</span>
+        </button>
+      </div>
+
       <section class="content">
         {#if hasImage}
           <div class="image-card">
@@ -121,6 +137,7 @@
         width={1200}
         height={700}
         isStandalone={false}
+        {theme}
         onComplete={handleComplete}
         onCancel={handleCancel}
       />
@@ -194,6 +211,49 @@
     color: rgba(245, 245, 247, 0.6);
     font-size: 15px;
     line-height: 1.6;
+  }
+
+  .theme-switcher {
+    display: flex;
+    justify-content: center;
+    gap: 4px;
+    padding: 4px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 999px;
+    width: fit-content;
+    margin: 0 auto;
+  }
+
+  .theme-btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    background: transparent;
+    border: none;
+    border-radius: 999px;
+    color: rgba(245, 245, 247, 0.5);
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition:
+      background 180ms cubic-bezier(0.16, 1, 0.3, 1),
+      color 180ms cubic-bezier(0.16, 1, 0.3, 1);
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .theme-btn:hover {
+    color: rgba(245, 245, 247, 0.8);
+  }
+
+  .theme-btn.active {
+    background: rgba(255, 255, 255, 0.1);
+    color: #f5f5f7;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
   }
 
   .content {

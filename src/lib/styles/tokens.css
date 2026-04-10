@@ -169,13 +169,112 @@
   --tk-blur-md: blur(24px) saturate(160%);
   --tk-blur-lg: blur(40px) saturate(180%);
 
+  /* ──────────────────────────────────────────────
+   *  Semantic — theme-aware component tokens
+   * ────────────────────────────────────────────── */
+  --tk-overlay-dim: rgba(0, 0, 0, 0.5);
+  --tk-handle-fill: #ffffff;
+  --tk-handle-stroke: var(--tk-accent);
+  --tk-crop-grid: rgba(255, 255, 255, 0.22);
+  --tk-crop-grid-active: rgba(255, 255, 255, 0.55);
+  --tk-crop-border: rgba(255, 255, 255, 0.85);
+  --tk-slider-thumb: #ffffff;
+  --tk-gpu-badge-bg: rgba(0, 0, 0, 0.5);
+  --tk-gpu-badge-text: rgba(255, 255, 255, 0.8);
+  --tk-gpu-badge-border: rgba(255, 255, 255, 0.12);
+  --tk-canvas-shadow: rgba(0, 0, 0, 0.7);
+  --tk-stage-glow: rgba(255, 255, 255, 0.04);
+  --tk-stamp-stroke-default: rgba(255, 255, 255, 0.8);
+  --tk-annotation-handle-stroke: #ffffff;
+
   /* Backwards-compat alias used by older callers */
   --primary-color: var(--tk-accent);
+}
+
+/* ──────────────────────────────────────────────
+ *  Light theme overrides
+ * ────────────────────────────────────────────── */
+:where(.tokimeki-editor[data-theme="light"]) {
+  /* Surfaces */
+  --tk-bg-base: #ffffff;
+  --tk-bg-canvas: #fafafa;
+  --tk-bg-elevated: #ffffff;
+  --tk-bg-overlay: #f0f0f2;
+  --tk-bg-glass: rgba(255, 255, 255, 0.72);
+  --tk-bg-glass-strong: rgba(255, 255, 255, 0.88);
+
+  --tk-surface-1: #f0f0f2;
+  --tk-surface-2: #e8e8ec;
+  --tk-surface-3: #d8d8de;
+  --tk-surface-hover: #e4e4ea;
+  --tk-surface-active: #d0d0d8;
+  --tk-surface-inset: #e8e8ec;
+
+  /* Text */
+  --tk-text-primary: #1d1d1f;
+  --tk-text-secondary: #636366;
+  --tk-text-tertiary: #8e8e93;
+  --tk-text-disabled: #aeaeb2;
+  --tk-text-on-accent: #ffffff;
+
+  /* Borders & dividers */
+  --tk-border-subtle: rgba(0, 0, 0, 0.06);
+  --tk-border-default: rgba(0, 0, 0, 0.1);
+  --tk-border-strong: rgba(0, 0, 0, 0.18);
+  --tk-divider: rgba(0, 0, 0, 0.08);
+
+  /* Accent — keep blue, adjust soft tones */
+  --tk-accent: #007aff;
+  --tk-accent-hover: #0066d6;
+  --tk-accent-pressed: #004ea2;
+  --tk-accent-soft: rgba(0, 122, 255, 0.12);
+  --tk-accent-glow: 0 0 0 4px rgba(0, 122, 255, 0.16);
+
+  /* Semantic */
+  --tk-success: #28a745;
+  --tk-warning: #ff9500;
+  --tk-danger: #ff3b30;
+  --tk-danger-hover: #d63027;
+  --tk-danger-soft: rgba(255, 59, 48, 0.1);
+
+  /* Shadows — lighter for light theme */
+  --tk-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --tk-shadow-sm: 0 2px 6px rgba(0, 0, 0, 0.08);
+  --tk-shadow-md: 0 6px 16px rgba(0, 0, 0, 0.1);
+  --tk-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12);
+  --tk-shadow-xl: 0 24px 60px rgba(0, 0, 0, 0.16);
+  --tk-shadow-glass:
+    0 24px 60px -12px rgba(0, 0, 0, 0.16),
+    0 1px 0 rgba(0, 0, 0, 0.04) inset,
+    0 0 0 1px rgba(0, 0, 0, 0.06) inset;
+  --tk-ring-focus: 0 0 0 3px rgba(0, 122, 255, 0.28);
+
+  /* Semantic component tokens — light overrides */
+  --tk-overlay-dim: rgba(0, 0, 0, 0.3);
+  --tk-crop-grid: rgba(0, 0, 0, 0.18);
+  --tk-crop-grid-active: rgba(0, 0, 0, 0.45);
+  --tk-crop-border: rgba(0, 0, 0, 0.7);
+  --tk-gpu-badge-bg: rgba(255, 255, 255, 0.8);
+  --tk-gpu-badge-text: rgba(0, 0, 0, 0.6);
+  --tk-gpu-badge-border: rgba(0, 0, 0, 0.08);
+  --tk-canvas-shadow: rgba(0, 0, 0, 0.15);
+  --tk-stage-glow: rgba(0, 0, 0, 0.03);
+  --tk-stamp-stroke-default: rgba(0, 0, 0, 0.6);
+  --tk-annotation-handle-stroke: #1d1d1f;
+
+  /* Glass blur — less saturate for light */
+  --tk-blur-sm: blur(12px) saturate(120%);
+  --tk-blur-md: blur(24px) saturate(130%);
+  --tk-blur-lg: blur(40px) saturate(140%);
 }
 
 /* When the editor is the page-level root we still want tokens available */
 :where(html, body):has(.tokimeki-editor) {
   color-scheme: dark;
+}
+
+:where(html, body):has(.tokimeki-editor[data-theme="light"]) {
+  color-scheme: light;
 }
 
 /* Reset patterns inside the editor */

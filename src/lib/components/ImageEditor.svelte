@@ -12,7 +12,8 @@
     AdjustmentsState,
     BlurArea,
     StampArea,
-    Annotation
+    Annotation,
+    Theme
   } from '../types';
   import {
     createEditorState,
@@ -65,6 +66,7 @@
     width?: number;
     height?: number;
     isStandalone?: boolean;
+    theme?: Theme;
     onComplete?: (dataUrl: string, blobObj: { blob: Blob; width: number; height: number }) => void;
     onCancel?: () => void;
     onExport?: (dataUrl: string) => void;
@@ -79,10 +81,24 @@
     width = 800,
     height = 600,
     isStandalone = false,
+    theme = 'dark',
     onComplete,
     onCancel,
     onExport
   }: Props = $props();
+
+  let prefersDark = $state(true);
+
+  $effect(() => {
+    if (theme !== 'system') return;
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    prefersDark = mql.matches;
+    const handler = (e: MediaQueryListEvent) => { prefersDark = e.matches; };
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  });
+
+  let resolvedTheme = $derived(theme === 'system' ? (prefersDark ? 'dark' : 'light') : theme);
 
   let state = $state<EditorState>(createEditorState());
   let canvasElement = $state<HTMLCanvasElement | null>(null);
@@ -298,7 +314,7 @@
 
 <svelte:window onkeydown={handleKeyDown} />
 
-<div class="tokimeki-editor editor" class:standalone={isStandalone} class:embedded={!isStandalone}>
+<div class="tokimeki-editor editor" class:standalone={isStandalone} class:embedded={!isStandalone} data-theme={resolvedTheme}>
   <!-- Topbar — actions & history -->
   <header class="topbar">
     <div class="topbar-left">
@@ -434,6 +450,7 @@
           stampAreas={state.stampAreas}
           annotations={state.annotations}
           skipAnnotations={state.mode === 'annotate'}
+          theme={resolvedTheme}
           onZoom={handleZoom}
           onViewportChange={handleViewportChange}
         />
@@ -681,7 +698,7 @@
     align-items: center;
     justify-content: center;
     background:
-      radial-gradient(ellipse at top, rgba(255, 255, 255, 0.04), transparent 60%),
+      radial-gradient(ellipse at top, var(--tk-stage-glow), transparent 60%),
       var(--tk-bg-canvas);
     overflow: hidden;
   }
