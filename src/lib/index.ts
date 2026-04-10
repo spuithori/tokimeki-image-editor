@@ -11,7 +11,13 @@ export type {
   TransformState,
   ExportOptions,
   EditorState,
-  Theme
+  Theme,
+  ToneCurvePoint,
+  ToneCurve,
+  HSLRange,
+  HSLColorName,
+  HSLAdjustment,
+  AdjustmentsState
 } from './types';
 
 // Utils

@@ -1,5 +1,38 @@
 export type EditorMode = 'crop' | 'rotate' | 'adjust' | 'filter' | 'blur' | 'stamp' | 'annotate' | 'export' | null;
 
+// ── Tone Curve ──────────────────────────────────────────
+export interface ToneCurvePoint {
+  x: number; // 0-255 input
+  y: number; // 0-255 output
+}
+
+export interface ToneCurve {
+  rgb: ToneCurvePoint[];
+  red: ToneCurvePoint[];
+  green: ToneCurvePoint[];
+  blue: ToneCurvePoint[];
+}
+
+// ── HSL Per-Color Adjustment ────────────────────────────
+export interface HSLRange {
+  hue: number;        // -180 to +180
+  saturation: number; // -100 to +100
+  luminance: number;  // -100 to +100
+}
+
+export type HSLColorName = 'red' | 'orange' | 'yellow' | 'green' | 'aqua' | 'blue' | 'purple' | 'magenta';
+
+export interface HSLAdjustment {
+  red: HSLRange;
+  orange: HSLRange;
+  yellow: HSLRange;
+  green: HSLRange;
+  aqua: HSLRange;
+  blue: HSLRange;
+  purple: HSLRange;
+  magenta: HSLRange;
+}
+
 export type Theme = 'dark' | 'light' | 'system';
 
 export interface ImageData {
@@ -90,6 +123,10 @@ export interface AdjustmentsState {
   grayscale: number;    // 0 to 100 (CSS filter grayscale)
   blur: number;         // 0 to 100 (Gaussian blur applied to entire image)
   grain: number;        // 0 to 100 (film grain effect)
+  sharpen: number;      // 0 to 100 (unsharp mask)
+  denoise: number;      // 0 to 100 (bilateral filter)
+  toneCurve: ToneCurve;
+  hsl: HSLAdjustment;
 }
 
 export interface FilterPreset {

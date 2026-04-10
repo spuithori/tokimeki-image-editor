@@ -1,4 +1,159 @@
-import type { AdjustmentsState, Viewport, CropArea } from '../types';
+import type { AdjustmentsState, Viewport, CropArea, ToneCurve, ToneCurvePoint, HSLAdjustment, HSLRange } from '../types';
+
+/**
+ * Create default HSL range (no adjustment)
+ */
+export function createDefaultHSLRange(): HSLRange {
+  return { hue: 0, saturation: 0, luminance: 0 };
+}
+
+/**
+ * Create default HSL adjustment (all colors neutral)
+ */
+export function createDefaultHSL(): HSLAdjustment {
+  return {
+    red: createDefaultHSLRange(),
+    orange: createDefaultHSLRange(),
+    yellow: createDefaultHSLRange(),
+    green: createDefaultHSLRange(),
+    aqua: createDefaultHSLRange(),
+    blue: createDefaultHSLRange(),
+    purple: createDefaultHSLRange(),
+    magenta: createDefaultHSLRange(),
+  };
+}
+
+/**
+ * Create default tone curve (linear identity)
+ */
+export function createDefaultToneCurve(): ToneCurve {
+  const linear: ToneCurvePoint[] = [{ x: 0, y: 0 }, { x: 255, y: 255 }];
+  return {
+    rgb: [...linear.map(p => ({ ...p }))],
+    red: [...linear.map(p => ({ ...p }))],
+    green: [...linear.map(p => ({ ...p }))],
+    blue: [...linear.map(p => ({ ...p }))],
+  };
+}
+
+/**
+ * Catmull-Rom spline interpolation for tone curve LUT generation.
+ * Given sorted control points, returns a 256-entry lookup table.
+ */
+export function generateCurveLUTChannel(points: ToneCurvePoint[]): Uint8Array {
+  const lut = new Uint8Array(256);
+  if (points.length === 0) {
+    for (let i = 0; i < 256; i++) lut[i] = i;
+    return lut;
+  }
+  if (points.length === 1) {
+    lut.fill(Math.round(Math.max(0, Math.min(255, points[0].y))));
+    return lut;
+  }
+
+  // Sort by x
+  const sorted = [...points].sort((a, b) => a.x - b.x);
+
+  // For exactly 2 points, use simple linear interpolation (avoids Catmull-Rom edge case)
+  if (sorted.length === 2) {
+    const [p0, p1] = sorted;
+    for (let i = 0; i < 256; i++) {
+      if (i <= p0.x) {
+        lut[i] = Math.round(Math.max(0, Math.min(255, p0.y)));
+      } else if (i >= p1.x) {
+        lut[i] = Math.round(Math.max(0, Math.min(255, p1.y)));
+      } else {
+        const t = (i - p0.x) / (p1.x - p0.x);
+        lut[i] = Math.round(Math.max(0, Math.min(255, p0.y + (p1.y - p0.y) * t)));
+      }
+    }
+    return lut;
+  }
+
+  for (let i = 0; i < 256; i++) {
+    // Find surrounding control points
+    let idx = 0;
+    while (idx < sorted.length - 1 && sorted[idx + 1].x < i) idx++;
+
+    if (i <= sorted[0].x) {
+      lut[i] = Math.round(Math.max(0, Math.min(255, sorted[0].y)));
+      continue;
+    }
+    if (i >= sorted[sorted.length - 1].x) {
+      lut[i] = Math.round(Math.max(0, Math.min(255, sorted[sorted.length - 1].y)));
+      continue;
+    }
+
+    // Get 4 points for Catmull-Rom (p0, p1, p2, p3)
+    const i1 = idx;
+    const i2 = Math.min(idx + 1, sorted.length - 1);
+    const i0 = Math.max(i1 - 1, 0);
+    const i3 = Math.min(i2 + 1, sorted.length - 1);
+
+    const p0 = sorted[i0];
+    const p1 = sorted[i1];
+    const p2 = sorted[i2];
+    const p3 = sorted[i3];
+
+    // t parameter
+    const range = p2.x - p1.x;
+    const t = range > 0 ? (i - p1.x) / range : 0;
+
+    // Catmull-Rom interpolation
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const v = 0.5 * (
+      (2 * p1.y) +
+      (-p0.y + p2.y) * t +
+      (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+      (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3
+    );
+
+    lut[i] = Math.round(Math.max(0, Math.min(255, v)));
+  }
+
+  return lut;
+}
+
+/**
+ * Generate full RGBA LUT texture data (256×1) from ToneCurve.
+ * R channel = master(red), G channel = master(green), B channel = master(blue), A = 255.
+ */
+export function generateCurveLUT(curve: ToneCurve): Uint8Array {
+  const masterLut = generateCurveLUTChannel(curve.rgb);
+  const redLut = generateCurveLUTChannel(curve.red);
+  const greenLut = generateCurveLUTChannel(curve.green);
+  const blueLut = generateCurveLUTChannel(curve.blue);
+
+  const data = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    // Apply master curve first, then per-channel
+    const masterVal = masterLut[i];
+    data[i * 4 + 0] = redLut[masterVal];
+    data[i * 4 + 1] = greenLut[masterVal];
+    data[i * 4 + 2] = blueLut[masterVal];
+    data[i * 4 + 3] = 255;
+  }
+  return data;
+}
+
+/**
+ * Check if a tone curve is the default linear identity
+ */
+export function isToneCurveDefault(curve: ToneCurve): boolean {
+  const isLinear = (pts: ToneCurvePoint[]) =>
+    pts.length === 2 && pts[0].x === 0 && pts[0].y === 0 && pts[1].x === 255 && pts[1].y === 255;
+  return isLinear(curve.rgb) && isLinear(curve.red) && isLinear(curve.green) && isLinear(curve.blue);
+}
+
+/**
+ * Check if HSL adjustment is all default (no changes)
+ */
+export function isHSLDefault(hsl: HSLAdjustment): boolean {
+  return Object.values(hsl).every(
+    (range: HSLRange) => range.hue === 0 && range.saturation === 0 && range.luminance === 0
+  );
+}
 
 /**
  * Create default adjustments state (all values at 0 = no adjustment)
@@ -16,7 +171,11 @@ export function createDefaultAdjustments(): AdjustmentsState {
     sepia: 0,
     grayscale: 0,
     blur: 0,
-    grain: 0
+    grain: 0,
+    sharpen: 0,
+    denoise: 0,
+    toneCurve: createDefaultToneCurve(),
+    hsl: createDefaultHSL(),
   };
 }
 
@@ -125,7 +284,11 @@ export async function applyAllAdjustments(
     adjustments.sepia === 0 &&
     adjustments.grayscale === 0 &&
     adjustments.blur === 0 &&
-    adjustments.grain === 0
+    adjustments.grain === 0 &&
+    adjustments.sharpen === 0 &&
+    adjustments.denoise === 0 &&
+    isToneCurveDefault(adjustments.toneCurve) &&
+    isHSLDefault(adjustments.hsl)
   ) {
     return;
   }
@@ -164,6 +327,23 @@ function applyAllAdjustmentsCPU(
 
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const data = imageData.data;
+
+  // Pre-calculate tone curve LUT (CPU version)
+  const hasToneCurve = !isToneCurveDefault(adjustments.toneCurve);
+  let curveLutR: Uint8Array | null = null;
+  let curveLutG: Uint8Array | null = null;
+  let curveLutB: Uint8Array | null = null;
+  if (hasToneCurve) {
+    const lutData = generateCurveLUT(adjustments.toneCurve);
+    curveLutR = new Uint8Array(256);
+    curveLutG = new Uint8Array(256);
+    curveLutB = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) {
+      curveLutR[i] = lutData[i * 4 + 0];
+      curveLutG[i] = lutData[i * 4 + 1];
+      curveLutB[i] = lutData[i * 4 + 2];
+    }
+  }
 
   // Pre-calculate adjustment factors
   const hasExposure = adjustments.exposure !== 0;
@@ -210,6 +390,13 @@ function applyAllAdjustmentsCPU(
     let r = data[i];
     let g = data[i + 1];
     let b = data[i + 2];
+
+    // Apply tone curve LUT
+    if (hasToneCurve && curveLutR && curveLutG && curveLutB) {
+      r = curveLutR[Math.max(0, Math.min(255, Math.round(r)))];
+      g = curveLutG[Math.max(0, Math.min(255, Math.round(g)))];
+      b = curveLutB[Math.max(0, Math.min(255, Math.round(b)))];
+    }
 
     // Apply brightness (multiply all channels)
     if (hasBrightness) {

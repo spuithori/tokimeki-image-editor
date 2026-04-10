@@ -42,11 +42,32 @@ struct Uniforms {
   cropY: f32,
   cropWidth: f32,
   cropHeight: f32,
+
+  // Padding to align HSL block to 16-byte boundary
+  // After cropHeight we're at offset 27*4=108, need to reach offset 128 (32*4) for vec4 alignment
+  _padAlign0: f32,
+  _padAlign1: f32,
+  _padAlign2: f32,
+  _padAlign3: f32,
+  _padAlign4: f32,
+
+  // HSL per-color adjustment (8 colors × vec4 = 32 floats, starting at offset 128)
+  // Each vec4: (hue_shift, saturation_adj, luminance_adj, unused)
+  hslRed: vec4<f32>,
+  hslOrange: vec4<f32>,
+  hslYellow: vec4<f32>,
+  hslGreen: vec4<f32>,
+  hslAqua: vec4<f32>,
+  hslBlue: vec4<f32>,
+  hslPurple: vec4<f32>,
+  hslMagenta: vec4<f32>,
 };
 
 @group(0) @binding(0) var mySampler: sampler;
 @group(0) @binding(1) var myTexture: texture_2d<f32>;
 @group(0) @binding(2) var<uniform> params: Uniforms;
+@group(0) @binding(3) var curveLUTSampler: sampler;
+@group(0) @binding(4) var curveLUTTexture: texture_2d<f32>;
 
 // Full-screen triangle vertex shader
 @vertex
@@ -192,28 +213,76 @@ fn hue2rgb(p: f32, q: f32, t_: f32) -> f32 {
   return p;
 }
 
+// ── Lightroom-style HSL per-color adjustment ──
+//
+// 8 hue centers (degrees): Red=0, Orange=30, Yellow=60, Green=120,
+//                           Aqua=180, Blue=240, Purple=270, Magenta=300
+//
+// For any hue, finds the two adjacent centers and linearly interpolates
+// their adjustment values. Weights always sum to 1.0 — no dead zones,
+// no double-application, perfectly smooth transitions.
+//
+fn blendHSLAdjustments(hueDeg: f32,
+  r: vec3<f32>, o: vec3<f32>, y: vec3<f32>, g: vec3<f32>,
+  a: vec3<f32>, b: vec3<f32>, p: vec3<f32>, m: vec3<f32>
+) -> vec3<f32> {
+  var h = hueDeg;
+  // Normalize to [0, 360)
+  h = h - floor(h / 360.0) * 360.0;
+
+  // Piecewise linear interpolation between adjacent centers.
+  // Each segment blends the two neighboring bands' adjustments.
+  if (h < 30.0) {
+    return mix(r, o, h / 30.0);
+  } else if (h < 60.0) {
+    return mix(o, y, (h - 30.0) / 30.0);
+  } else if (h < 120.0) {
+    return mix(y, g, (h - 60.0) / 60.0);
+  } else if (h < 180.0) {
+    return mix(g, a, (h - 120.0) / 60.0);
+  } else if (h < 240.0) {
+    return mix(a, b, (h - 180.0) / 60.0);
+  } else if (h < 270.0) {
+    return mix(b, p, (h - 240.0) / 30.0);
+  } else if (h < 300.0) {
+    return mix(p, m, (h - 270.0) / 30.0);
+  } else {
+    return mix(m, r, (h - 300.0) / 60.0);
+  }
+}
+
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
   // Sample texture FIRST (must be in uniform control flow before any branching)
   var color = textureSample(myTexture, mySampler, clamp(uv, vec2<f32>(0.0), vec2<f32>(1.0)));
+
+  // Sample curve LUT (must also be in uniform control flow)
+  // We'll use it later — sample at a neutral point first to satisfy control flow rules
+  let curveSampleR = textureSample(curveLUTTexture, curveLUTSampler, vec2<f32>(clamp(color.r, 0.0, 1.0), 0.5));
+  let curveSampleG = textureSample(curveLUTTexture, curveLUTSampler, vec2<f32>(clamp(color.g, 0.0, 1.0), 0.5));
+  let curveSampleB = textureSample(curveLUTTexture, curveLUTSampler, vec2<f32>(clamp(color.b, 0.0, 1.0), 0.5));
+
   var rgb = color.rgb;
 
-  // Check if outside texture bounds (0-1) and set to black
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-    rgb = vec3<f32>(0.0);
-  }
+  // Determine pixel visibility (in-bounds and in-crop)
+  var isVisible = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0;
 
-  // When crop is active, only show the crop region - black out everything else
   if (params.cropWidth > 0.0) {
     let cropMinU = params.cropX / params.imageWidth;
     let cropMaxU = (params.cropX + params.cropWidth) / params.imageWidth;
     let cropMinV = params.cropY / params.imageHeight;
     let cropMaxV = (params.cropY + params.cropHeight) / params.imageHeight;
 
-    // If UV is outside the crop region, render black
     if (uv.x < cropMinU || uv.x > cropMaxU || uv.y < cropMinV || uv.y > cropMaxV) {
-      rgb = vec3<f32>(0.0);
+      isVisible = false;
     }
+  }
+
+  // Apply tone curve for visible pixels; black for out-of-bounds/crop
+  if (isVisible) {
+    rgb = vec3<f32>(curveSampleR.r, curveSampleG.g, curveSampleB.b);
+  } else {
+    rgb = vec3<f32>(0.0);
   }
 
   // 1. Brightness
@@ -248,6 +317,37 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     }
   }
 
+  // 4.5. HSL Per-Color Adjustment (Lightroom-style)
+  // Blend adjustment values from the two adjacent hue bands, then apply once.
+  {
+    rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+    var hsl = rgbToHsl(rgb);
+    let hueDeg = hsl.x * 360.0;
+
+    // Get blended adjustment: vec3(hueShift, satAdj, lumAdj)
+    let adj = blendHSLAdjustments(hueDeg,
+      params.hslRed.xyz, params.hslOrange.xyz, params.hslYellow.xyz, params.hslGreen.xyz,
+      params.hslAqua.xyz, params.hslBlue.xyz, params.hslPurple.xyz, params.hslMagenta.xyz
+    );
+
+    // Apply only if there's any adjustment
+    if (adj.x != 0.0 || adj.y != 0.0 || adj.z != 0.0) {
+      // Hue shift (additive, wrapping)
+      hsl.x = hsl.x + adj.x / 360.0;
+      if (hsl.x < 0.0) { hsl.x = hsl.x + 1.0; }
+      if (hsl.x > 1.0) { hsl.x = hsl.x - 1.0; }
+
+      // Saturation (proportional — preserves relative saturation like Lightroom)
+      hsl.y = clamp(hsl.y * (1.0 + adj.y / 100.0), 0.0, 1.0);
+
+      // Luminance (weighted additive — stronger in midtones, gentler near extremes)
+      let lumWeight = 4.0 * hsl.z * (1.0 - hsl.z); // peaks at L=0.5, zero at L=0 and L=1
+      hsl.z = clamp(hsl.z + (adj.z / 100.0) * max(lumWeight, 0.15), 0.0, 1.0);
+
+      rgb = hslToRgb(hsl);
+    }
+  }
+
   // 5. Saturation
   if (params.saturation != 0.0) {
     rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
@@ -257,8 +357,6 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
   }
 
   // 5.5. Color Temperature
-  // Warm (positive): add red, subtract blue
-  // Cool (negative): subtract red, add blue
   if (params.temperature != 0.0) {
     let temp = params.temperature / 100.0;
     rgb.r = rgb.r + temp * 0.1;

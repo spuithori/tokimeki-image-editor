@@ -28,6 +28,12 @@ fn vs_main(@builtin(vertex_index) VertexIndex: u32) -> VertexOutput {
   return output;
 }
 
+// Compute Gaussian weight for offset d with standard deviation sigma.
+// G(d, sigma) = exp(-d*d / (2 * sigma * sigma))
+fn gaussianWeight(d: f32, sigma: f32) -> f32 {
+  return exp(-(d * d) / (2.0 * sigma * sigma));
+}
+
 @fragment
 fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
   let r = i32(blur.radius);
@@ -40,21 +46,22 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
   let texSize = vec2<f32>(textureDimensions(myTexture));
   let texelSize = 1.0 / texSize;
 
-  // Gaussian blur weights (for radius up to 10)
-  // Pre-normalized weights for different radii
+  // Derive sigma from radius: sigma = radius / 3 covers ~99.7% of distribution.
+  // Minimum sigma of 0.5 to avoid divide-by-zero-like issues.
+  let sigma = max(f32(r) / 3.0, 0.5);
+
+  // Gaussian-weighted separable blur
   var color = vec4<f32>(0.0);
+  var totalWeight = 0.0;
 
-  // Simple box blur for now (equal weights)
-  // TODO: Use proper Gaussian weights
-  let totalSamples = f32(r * 2 + 1);
-
-  // Sample along the blur direction
   for (var i = -r; i <= r; i = i + 1) {
+    let w = gaussianWeight(f32(i), sigma);
     let offset = vec2<f32>(f32(i)) * blur.direction * texelSize;
-    let sampleUV = uv + offset;
-    color = color + textureSample(myTexture, mySampler, sampleUV) / totalSamples;
+    let sampleUV = clamp(uv + offset, vec2<f32>(0.0), vec2<f32>(1.0));
+    color = color + textureSample(myTexture, mySampler, sampleUV) * w;
+    totalWeight = totalWeight + w;
   }
 
-  return color;
+  return color / totalWeight;
 }
 `;

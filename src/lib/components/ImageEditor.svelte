@@ -233,6 +233,16 @@
     }, 300);
   }
 
+  function handleCurveChange(curve: import('../types').ToneCurve) {
+    state = applyAdjustmentsUpdate(state, { toneCurve: curve });
+    state = coreSaveToHistory(state);
+  }
+
+  function handleHSLChange(hsl: import('../types').HSLAdjustment) {
+    state = applyAdjustmentsUpdate(state, { hsl });
+    state = coreSaveToHistory(state);
+  }
+
   function handleFilterApply(adjustments: AdjustmentsState) {
     state = applyFilter(state, adjustments);
     state = coreSaveToHistory(state);
@@ -523,6 +533,8 @@
           <AdjustTool
             adjustments={state.adjustments}
             onChange={handleAdjustmentsChange}
+            onCurveChange={handleCurveChange}
+            onHSLChange={handleHSLChange}
             onClose={() => (state.mode = null)}
           />
         {:else if state.mode === 'filter'}

@@ -10,22 +10,30 @@
     Thermometer,
     Aperture,
     Waves,
-    Sparkles
+    Sparkles,
+    Focus,
+    AudioWaveform,
+    Spline,
+    Droplets
   } from 'lucide-svelte';
-  import type { AdjustmentsState } from '../types';
+  import type { AdjustmentsState, ToneCurve, HSLAdjustment } from '../types';
   import ToolPanel from './ToolPanel.svelte';
   import Slider from './Slider.svelte';
+  import ToneCurveTool from './ToneCurveTool.svelte';
+  import HSLTool from './HSLTool.svelte';
   import { haptic } from '../utils/haptics';
 
   interface Props {
     adjustments: AdjustmentsState;
     onChange: (adjustments: Partial<AdjustmentsState>) => void;
     onClose: () => void;
+    onCurveChange: (curve: ToneCurve) => void;
+    onHSLChange: (hsl: HSLAdjustment) => void;
   }
 
-  let { adjustments, onChange, onClose }: Props = $props();
+  let { adjustments, onChange, onClose, onCurveChange, onHSLChange }: Props = $props();
 
-  type ControlGroup = 'light' | 'color' | 'effects';
+  type ControlGroup = 'light' | 'color' | 'effects' | 'detail' | 'curve' | 'hsl';
   let activeGroup = $state<ControlGroup>('light');
 
   function handleChange(key: keyof AdjustmentsState, value: number) {
@@ -46,7 +54,9 @@
       sepia: 0,
       grayscale: 0,
       blur: 0,
-      grain: 0
+      grain: 0,
+      sharpen: 0,
+      denoise: 0
     });
   }
 
@@ -74,17 +84,24 @@
     { key: 'grain', icon: Sparkles, bipolar: false, min: 0, max: 100 }
   ] as const;
 
+  const detailControls = [
+    { key: 'sharpen', icon: Focus, bipolar: false, min: 0, max: 100 },
+    { key: 'denoise', icon: AudioWaveform, bipolar: false, min: 0, max: 100 }
+  ] as const;
+
   let currentControls = $derived(
     activeGroup === 'light'
       ? lightControls
       : activeGroup === 'color'
       ? colorControls
+      : activeGroup === 'detail'
+      ? detailControls
       : effectControls
   );
 
-  // Quick visual feedback: show how many adjustments are active
+  // Quick visual feedback: show how many scalar adjustments are active
   let activeCount = $derived(
-    Object.values(adjustments).filter((v) => v !== 0).length
+    Object.entries(adjustments).filter(([_, v]) => typeof v === 'number' && v !== 0).length
   );
 
   function setGroup(g: ControlGroup) {
@@ -92,18 +109,66 @@
     haptic('selection');
     activeGroup = g;
   }
+
+  // Drag-to-scroll for group tabs
+  let tabsEl = $state<HTMLDivElement | null>(null);
+  let isDraggingTabs = false; // intentionally not reactive — no re-render needed
+  let dragActive = false;
+  let dragStartX = 0;
+  let scrollStartX = 0;
+
+  function handleTabsPointerDown(e: PointerEvent) {
+    if (!tabsEl) return;
+    dragActive = true;
+    isDraggingTabs = false;
+    dragStartX = e.clientX;
+    scrollStartX = tabsEl.scrollLeft;
+  }
+
+  function handleTabsPointerMove(e: PointerEvent) {
+    if (!dragActive || !tabsEl) return;
+    const dx = e.clientX - dragStartX;
+    if (!isDraggingTabs && Math.abs(dx) > 5) {
+      isDraggingTabs = true;
+    }
+    if (isDraggingTabs) {
+      tabsEl.scrollLeft = scrollStartX - dx;
+    }
+  }
+
+  function handleTabsPointerUp() {
+    if (isDraggingTabs) {
+      // Reset after a microtask so the click event on the button still sees isDraggingTabs=true
+      setTimeout(() => { isDraggingTabs = false; }, 0);
+    }
+    dragActive = false;
+  }
+
+  function guardClick(fn: () => void) {
+    return () => {
+      if (!isDraggingTabs) fn();
+    };
+  }
 </script>
 
 <div class="adjust-tool" onwheel={handleWheel}>
   <ToolPanel title={$_('editor.adjust')} {onClose}>
     {#snippet children()}
-      <div class="group-tabs" role="tablist">
+      <div
+        class="group-tabs"
+        role="tablist"
+        bind:this={tabsEl}
+        onpointerdown={handleTabsPointerDown}
+        onpointermove={handleTabsPointerMove}
+        onpointerup={handleTabsPointerUp}
+        onpointerleave={handleTabsPointerUp}
+      >
         <button
           role="tab"
           aria-selected={activeGroup === 'light'}
           class="group-tab"
           class:active={activeGroup === 'light'}
-          onclick={() => setGroup('light')}
+          onclick={guardClick(() => setGroup('light'))}
         >
           <Sun size={14} />
           <span>Light</span>
@@ -113,7 +178,7 @@
           aria-selected={activeGroup === 'color'}
           class="group-tab"
           class:active={activeGroup === 'color'}
-          onclick={() => setGroup('color')}
+          onclick={guardClick(() => setGroup('color'))}
         >
           <Palette size={14} />
           <span>Color</span>
@@ -123,32 +188,68 @@
           aria-selected={activeGroup === 'effects'}
           class="group-tab"
           class:active={activeGroup === 'effects'}
-          onclick={() => setGroup('effects')}
+          onclick={guardClick(() => setGroup('effects'))}
         >
           <Sparkles size={14} />
           <span>Effects</span>
         </button>
+        <button
+          role="tab"
+          aria-selected={activeGroup === 'detail'}
+          class="group-tab"
+          class:active={activeGroup === 'detail'}
+          onclick={guardClick(() => setGroup('detail'))}
+        >
+          <Focus size={14} />
+          <span>Detail</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={activeGroup === 'curve'}
+          class="group-tab"
+          class:active={activeGroup === 'curve'}
+          onclick={guardClick(() => setGroup('curve'))}
+        >
+          <Spline size={14} />
+          <span>Curve</span>
+        </button>
+        <button
+          role="tab"
+          aria-selected={activeGroup === 'hsl'}
+          class="group-tab"
+          class:active={activeGroup === 'hsl'}
+          onclick={guardClick(() => setGroup('hsl'))}
+        >
+          <Droplets size={14} />
+          <span>HSL</span>
+        </button>
       </div>
 
       <div class="control-list">
-        {#each currentControls as control (control.key)}
-          {@const Icon = control.icon}
-          <div class="control-row">
-            <div class="control-icon">
-              <Icon size={16} strokeWidth={1.8} />
+        {#if activeGroup === 'curve'}
+          <ToneCurveTool toneCurve={adjustments.toneCurve} onChange={onCurveChange} />
+        {:else if activeGroup === 'hsl'}
+          <HSLTool hsl={adjustments.hsl} onChange={onHSLChange} />
+        {:else}
+          {#each currentControls as control (control.key)}
+            {@const Icon = control.icon}
+            <div class="control-row">
+              <div class="control-icon">
+                <Icon size={16} strokeWidth={1.8} />
+              </div>
+              <div class="control-slider">
+                <Slider
+                  label={$_(`adjustments.${control.key}`)}
+                  value={adjustments[control.key as keyof AdjustmentsState]}
+                  min={control.min}
+                  max={control.max}
+                  bipolar={control.bipolar}
+                  onInput={(v) => handleChange(control.key as keyof AdjustmentsState, v)}
+                />
+              </div>
             </div>
-            <div class="control-slider">
-              <Slider
-                label={$_(`adjustments.${control.key}`)}
-                value={adjustments[control.key as keyof AdjustmentsState]}
-                min={control.min}
-                max={control.max}
-                bipolar={control.bipolar}
-                onInput={(v) => handleChange(control.key as keyof AdjustmentsState, v)}
-              />
-            </div>
-          </div>
-        {/each}
+          {/each}
+        {/if}
       </div>
     {/snippet}
 
@@ -180,6 +281,15 @@
     background: var(--tk-surface-1);
     border-radius: var(--tk-radius-lg);
     margin-bottom: var(--tk-space-3);
+    overflow-x: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .group-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .group-tabs:active {
+    cursor: grabbing;
   }
 
   .group-tab {

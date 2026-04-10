@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite dev --host",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "files": [
     "dist"
@@ -41,6 +43,7 @@
     "svelte": "^5.55.2",
     "svelte-preprocess": "^6.0.3",
     "typescript": "^5.9.3",
-    "vite": "^7.3.2"
+    "vite": "^7.3.2",
+    "vitest": "^4.1.4"
   }
 }

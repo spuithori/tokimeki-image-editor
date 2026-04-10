@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { drawImage, preloadStampImage, applyStamps, applyAnnotations } from '../utils/canvas';
-  import { initWebGPUCanvas, uploadImageToGPU, renderWithAdjustments, cleanupWebGPU, setCanvasClearColor } from '../utils/webgpu-render';
+  import { initWebGPUCanvas, uploadImageToGPU, renderWithAdjustments, cleanupWebGPU, setCanvasClearColor, updateCurveLUT } from '../utils/webgpu-render';
+  import { isToneCurveDefault } from '../utils/adjustments';
   import {
     createEditorInteractionState,
     handlePureMouseDown,
@@ -61,7 +62,15 @@
 
   $effect(() => {
     setCanvasClearColor(CLEAR_COLORS[theme]);
-    requestRender();
+    // Guard: don't trigger 2D render while WebGPU init is in progress,
+    // as calling getContext('2d') poisons the canvas for WebGPU.
+    if (!isInitializing) {
+      if (useWebGPU) {
+        renderWebGPU();
+      } else {
+        requestRender();
+      }
+    }
   });
 
   // State
@@ -181,9 +190,20 @@
     }
   });
 
+  // Track last-uploaded curve to avoid redundant LUT writes
+  let lastCurveHash = '';
+
   function renderWebGPU() {
     if (!canvasElement || !webgpuReady || !currentImage) return;
     ensureCanvasSize(canvasElement, width, height);
+
+    // Update tone curve LUT if changed
+    const curveHash = JSON.stringify(adjustments.toneCurve);
+    if (curveHash !== lastCurveHash) {
+      lastCurveHash = curveHash;
+      updateCurveLUT(adjustments.toneCurve);
+    }
+
     renderWithAdjustments(adjustments, viewport, transform, width, height,
       currentImage.width, currentImage.height, cropArea, blurAreas);
 

@@ -1,8 +1,11 @@
-import type { AdjustmentsState, Viewport, TransformState, CropArea, BlurArea } from '../types';
+import type { AdjustmentsState, Viewport, TransformState, CropArea, BlurArea, ToneCurve } from '../types';
 import { IMAGE_EDITOR_SHADER_CODE } from '../shaders/image-editor';
 import { BLUR_SHADER_CODE } from '../shaders/blur';
 import { COMPOSITE_SHADER_CODE } from '../shaders/composite';
 import { GRAIN_SHADER_CODE } from '../shaders/grain';
+import { SHARPEN_SHADER_CODE } from '../shaders/sharpen';
+import { DENOISE_SHADER_CODE } from '../shaders/denoise';
+import { generateCurveLUT, isToneCurveDefault } from './adjustments';
 
 const SHADER_CODE = IMAGE_EDITOR_SHADER_CODE;
 
@@ -42,6 +45,18 @@ let gpuIntermediateTexture4: GPUTexture | null = null; // 4th texture for blur t
 // Grain pipeline state
 let gpuGrainPipeline: GPURenderPipeline | null = null;
 let gpuGrainUniformBuffer: GPUBuffer | null = null;
+
+// Sharpen pipeline state
+let gpuSharpenPipeline: GPURenderPipeline | null = null;
+let gpuSharpenUniformBuffer: GPUBuffer | null = null;
+
+// Denoise pipeline state
+let gpuDenoisePipeline: GPURenderPipeline | null = null;
+let gpuDenoiseUniformBuffer: GPUBuffer | null = null;
+
+// Tone Curve LUT texture (256×1 RGBA)
+let gpuCurveLUTTexture: GPUTexture | null = null;
+let gpuCurveLUTSampler: GPUSampler | null = null;
 
 // Helper functions and constants
 const BLUR_UNIFORMS_ZERO = new Float32Array([1.0, 0.0, 0.0, 0.0]);
@@ -117,10 +132,11 @@ export async function initWebGPUCanvas(canvas: HTMLCanvasElement): Promise<boole
     });
 
     // Create uniform buffer
-    // 10 (adjustments) + 4 (viewport) + 4 (transform) + 2 (canvas dims) + 2 (image dims) + 4 (crop) = 26 floats
-    // Round up to 32 for alignment
+    // 11 (adjustments) + 4 (viewport) + 4 (transform) + 2 (canvas) + 2 (image) + 4 (crop) = 27 floats
+    // + HSL: 8 colors × 4 floats (vec3 + padding) = 32 floats
+    // Total = 59 floats, round up to 64 for alignment = 256 bytes
     gpuUniformBuffer = gpuDevice.createBuffer({
-      size: 128, // 32 floats * 4 bytes
+      size: 256, // 64 floats * 4 bytes
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -224,6 +240,71 @@ export async function initWebGPUCanvas(canvas: HTMLCanvasElement): Promise<boole
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
+    // Create sharpen pipeline
+    const sharpenShaderModule = gpuDevice.createShaderModule({ code: SHARPEN_SHADER_CODE });
+    gpuSharpenPipeline = gpuDevice.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: sharpenShaderModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: sharpenShaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    gpuSharpenUniformBuffer = gpuDevice.createBuffer({
+      size: 16, // 4 floats
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Create denoise pipeline
+    const denoiseShaderModule = gpuDevice.createShaderModule({ code: DENOISE_SHADER_CODE });
+    gpuDenoisePipeline = gpuDevice.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: denoiseShaderModule, entryPoint: 'vs_main' },
+      fragment: {
+        module: denoiseShaderModule,
+        entryPoint: 'fs_main',
+        targets: [{ format }],
+      },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    gpuDenoiseUniformBuffer = gpuDevice.createBuffer({
+      size: 16, // 4 floats
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Create tone curve LUT texture (256×1 RGBA) — identity by default
+    gpuCurveLUTTexture = gpuDevice.createTexture({
+      size: [256, 1, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+
+    gpuCurveLUTSampler = gpuDevice.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
+
+    // Write identity LUT
+    const identityLUT = new Uint8Array(256 * 4);
+    for (let i = 0; i < 256; i++) {
+      identityLUT[i * 4 + 0] = i;
+      identityLUT[i * 4 + 1] = i;
+      identityLUT[i * 4 + 2] = i;
+      identityLUT[i * 4 + 3] = 255;
+    }
+    gpuDevice.queue.writeTexture(
+      { texture: gpuCurveLUTTexture },
+      identityLUT,
+      { bytesPerRow: 256 * 4 },
+      [256, 1, 1]
+    );
+
     console.log('WebGPU render pipeline initialized successfully');
     return true;
   } catch (error) {
@@ -269,7 +350,7 @@ export async function uploadImageToGPU(imageSource: HTMLImageElement | ImageBitm
  * Update bind group with current texture and uniforms
  */
 function updateBindGroup() {
-  if (!gpuDevice || !gpuPipeline || !gpuTexture || !gpuSampler || !gpuUniformBuffer) return;
+  if (!gpuDevice || !gpuPipeline || !gpuTexture || !gpuSampler || !gpuUniformBuffer || !gpuCurveLUTSampler || !gpuCurveLUTTexture) return;
 
   gpuBindGroup = gpuDevice.createBindGroup({
     layout: gpuPipeline.getBindGroupLayout(0),
@@ -277,8 +358,28 @@ function updateBindGroup() {
       { binding: 0, resource: gpuSampler },
       { binding: 1, resource: gpuTexture.createView() },
       { binding: 2, resource: { buffer: gpuUniformBuffer } },
+      { binding: 3, resource: gpuCurveLUTSampler },
+      { binding: 4, resource: gpuCurveLUTTexture.createView() },
     ],
   });
+}
+
+/**
+ * Update the tone curve LUT texture from current adjustments
+ */
+export function updateCurveLUT(toneCurve: ToneCurve): void {
+  if (!gpuDevice || !gpuCurveLUTTexture) return;
+
+  const lutData = generateCurveLUT(toneCurve);
+  gpuDevice.queue.writeTexture(
+    { texture: gpuCurveLUTTexture },
+    lutData,
+    { bytesPerRow: 256 * 4 },
+    [256, 1, 1]
+  );
+
+  // Rebind with new LUT
+  updateBindGroup();
 }
 
 /**
@@ -351,17 +452,22 @@ export function renderWithAdjustments(
     // Convert rotation from degrees to radians
     const rotationRad = (transform.rotation * Math.PI) / 180;
 
-    // Check if we need multi-pass rendering (for blur or grain layering)
+    // Check if we need multi-pass rendering
     const hasGlobalBlur = adjustments.blur > 0;
     const hasRegionalBlur = blurAreas.length > 0 && blurAreas.some(area => area.blurStrength > 0);
     const hasGrain = adjustments.grain > 0;
-    const needsMultiPass = hasGlobalBlur || hasRegionalBlur || hasGrain;
+    const hasSharpen = adjustments.sharpen > 0;
+    const hasDenoise = adjustments.denoise > 0;
+    const needsMultiPass = hasGlobalBlur || hasRegionalBlur || hasGrain || hasSharpen || hasDenoise;
 
     // If grain is enabled, we apply it in a separate pass AFTER blur
     // So pass grain=0 to the main shader
     const mainShaderGrain = needsMultiPass ? 0 : adjustments.grain;
 
-    // Update uniforms
+    // Build HSL uniform data (8 colors × vec4 with padding)
+    const hsl = adjustments.hsl;
+
+    // Update uniforms — extended to 64 floats (256 bytes)
     const uniformData = new Float32Array([
       // Adjustments (11 floats)
       adjustments.brightness,
@@ -396,14 +502,24 @@ export function renderWithAdjustments(
       imageWidth,
       imageHeight,
 
-      // Crop area (4 floats)
+      // Crop area (4 floats) — ends at float index 26
       cropArea?.x ?? 0,
       cropArea?.y ?? 0,
       cropArea?.width ?? 0,
       cropArea?.height ?? 0,
 
-      // Padding to 32 floats for alignment (11+4+4+2+2+4=27, need 5 padding)
-      0, 0, 0, 0, 0
+      // Padding to align HSL vec4 block (5 floats: index 27-31)
+      0, 0, 0, 0, 0,
+
+      // HSL per-color (8 × vec4: h, s, l, 0) = 32 floats (index 32-63)
+      hsl.red.hue, hsl.red.saturation, hsl.red.luminance, 0,
+      hsl.orange.hue, hsl.orange.saturation, hsl.orange.luminance, 0,
+      hsl.yellow.hue, hsl.yellow.saturation, hsl.yellow.luminance, 0,
+      hsl.green.hue, hsl.green.saturation, hsl.green.luminance, 0,
+      hsl.aqua.hue, hsl.aqua.saturation, hsl.aqua.luminance, 0,
+      hsl.blue.hue, hsl.blue.saturation, hsl.blue.luminance, 0,
+      hsl.purple.hue, hsl.purple.saturation, hsl.purple.luminance, 0,
+      hsl.magenta.hue, hsl.magenta.saturation, hsl.magenta.luminance, 0,
     ]);
     gpuDevice.queue.writeBuffer(gpuUniformBuffer, 0, uniformData);
 
@@ -430,7 +546,7 @@ export function renderWithAdjustments(
       return true;
     }
 
-    // Has blur or grain - use multi-pass rendering
+    // Has multi-pass effects - use extended rendering
     return renderWithBlur(
       blurAreas,
       canvasWidth,
@@ -441,7 +557,9 @@ export function renderWithAdjustments(
       viewport,
       transform,
       adjustments.blur,
-      adjustments.grain
+      adjustments.grain,
+      adjustments.sharpen,
+      adjustments.denoise
     );
   } catch (error) {
     console.error('WebGPU render failed:', error);
@@ -462,7 +580,9 @@ function renderWithBlur(
   viewport: Viewport,
   transform: TransformState,
   globalBlurStrength: number = 0,
-  grainAmount: number = 0
+  grainAmount: number = 0,
+  sharpenAmount: number = 0,
+  denoiseStrength: number = 0
 ): boolean {
   if (!gpuDevice || !gpuContext || !gpuPipeline || !gpuBindGroup ||
       !gpuBlurPipeline || !gpuBlurUniformBuffer ||
@@ -533,6 +653,195 @@ function renderWithBlur(
   copyPass.end();
 
   gpuDevice.queue.submit([commandEncoder.finish()]);
+
+  // === Pass 2b: Denoise (bilateral filter) if enabled ===
+  if (denoiseStrength > 0 && gpuDenoisePipeline && gpuDenoiseUniformBuffer) {
+    commandEncoder = gpuDevice.createCommandEncoder();
+
+    const denoiseUniforms = new Float32Array([denoiseStrength / 100, 0, 0, 0]);
+    gpuDevice.queue.writeBuffer(gpuDenoiseUniformBuffer, 0, denoiseUniforms);
+
+    const denoiseBindGroup = gpuDevice.createBindGroup({
+      layout: gpuDenoisePipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView4 },
+        { binding: 2, resource: { buffer: gpuDenoiseUniformBuffer } },
+      ],
+    });
+
+    const denoisePass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediateView2,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    denoisePass.setPipeline(gpuDenoisePipeline);
+    denoisePass.setBindGroup(0, denoiseBindGroup);
+    denoisePass.draw(3, 1, 0, 0);
+    denoisePass.end();
+
+    gpuDevice.queue.submit([commandEncoder.finish()]);
+
+    // Copy denoised result back to accumulator (intermediate2 → intermediate4)
+    commandEncoder = gpuDevice.createCommandEncoder();
+    gpuDevice.queue.writeBuffer(gpuBlurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
+
+    const denoiseCopyBg = gpuDevice.createBindGroup({
+      layout: gpuBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView2 },
+        { binding: 2, resource: { buffer: gpuBlurUniformBuffer } },
+      ],
+    });
+
+    const denoiseCopyPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediateView4,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    denoiseCopyPass.setPipeline(gpuBlurPipeline);
+    denoiseCopyPass.setBindGroup(0, denoiseCopyBg);
+    denoiseCopyPass.draw(3, 1, 0, 0);
+    denoiseCopyPass.end();
+
+    gpuDevice.queue.submit([commandEncoder.finish()]);
+  }
+
+  // === Pass 2c: Sharpen (unsharp mask) if enabled ===
+  if (sharpenAmount > 0 && gpuSharpenPipeline && gpuSharpenUniformBuffer) {
+    // Step 1: Blur the current accumulator (intermediate4) for the unsharp mask
+    // Horizontal blur → intermediate2
+    const sharpenBlurRadius = 4; // σ≈1.3 — captures meaningful edge structure, not pixel noise
+    commandEncoder = gpuDevice.createCommandEncoder();
+
+    const sharpBlurH = new Float32Array([1.0, 0.0, sharpenBlurRadius, 0.0]);
+    gpuDevice.queue.writeBuffer(gpuBlurUniformBuffer, 0, sharpBlurH);
+
+    const sharpBlurHBg = gpuDevice.createBindGroup({
+      layout: gpuBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView4 },
+        { binding: 2, resource: { buffer: gpuBlurUniformBuffer } },
+      ],
+    });
+
+    const sharpBlurHPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediateView2,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    sharpBlurHPass.setPipeline(gpuBlurPipeline);
+    sharpBlurHPass.setBindGroup(0, sharpBlurHBg);
+    sharpBlurHPass.draw(3, 1, 0, 0);
+    sharpBlurHPass.end();
+    gpuDevice.queue.submit([commandEncoder.finish()]);
+
+    // Vertical blur → intermediate3
+    commandEncoder = gpuDevice.createCommandEncoder();
+    const sharpBlurV = new Float32Array([0.0, 1.0, sharpenBlurRadius, 0.0]);
+    gpuDevice.queue.writeBuffer(gpuBlurUniformBuffer, 0, sharpBlurV);
+
+    const sharpBlurVBg = gpuDevice.createBindGroup({
+      layout: gpuBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView2 },
+        { binding: 2, resource: { buffer: gpuBlurUniformBuffer } },
+      ],
+    });
+
+    const sharpBlurVPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediateView3,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    sharpBlurVPass.setPipeline(gpuBlurPipeline);
+    sharpBlurVPass.setBindGroup(0, sharpBlurVBg);
+    sharpBlurVPass.draw(3, 1, 0, 0);
+    sharpBlurVPass.end();
+    gpuDevice.queue.submit([commandEncoder.finish()]);
+
+    // Step 2: Apply unsharp mask (original=intermediate4, blurred=intermediate3 → intermediate2)
+    commandEncoder = gpuDevice.createCommandEncoder();
+
+    // amount: 0-100 → 0-2.0 (50=1x standard sharpening)
+    // threshold: auto-scale with amount — more sharpening needs more noise gating
+    const sharpAmt = sharpenAmount / 50.0;
+    const sharpThresh = 0.01 + sharpenAmount * 0.0004; // 0.01 at low, ~0.05 at max
+    const sharpenUniforms = new Float32Array([sharpAmt, sharpThresh, 0, 0]);
+    gpuDevice.queue.writeBuffer(gpuSharpenUniformBuffer, 0, sharpenUniforms);
+
+    const sharpenBindGroup = gpuDevice.createBindGroup({
+      layout: gpuSharpenPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView4 },  // original
+        { binding: 2, resource: intermediateView3 },  // blurred
+        { binding: 3, resource: { buffer: gpuSharpenUniformBuffer } },
+      ],
+    });
+
+    const sharpenPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediateView2,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    sharpenPass.setPipeline(gpuSharpenPipeline);
+    sharpenPass.setBindGroup(0, sharpenBindGroup);
+    sharpenPass.draw(3, 1, 0, 0);
+    sharpenPass.end();
+    gpuDevice.queue.submit([commandEncoder.finish()]);
+
+    // Copy sharpened result back to accumulator (intermediate2 → intermediate4)
+    commandEncoder = gpuDevice.createCommandEncoder();
+    gpuDevice.queue.writeBuffer(gpuBlurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
+
+    const sharpCopyBg = gpuDevice.createBindGroup({
+      layout: gpuBlurPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: gpuSampler },
+        { binding: 1, resource: intermediateView2 },
+        { binding: 2, resource: { buffer: gpuBlurUniformBuffer } },
+      ],
+    });
+
+    const sharpCopyPass = commandEncoder.beginRenderPass({
+      colorAttachments: [{
+        view: intermediateView4,
+        clearValue: { r: 0, g: 0, b: 0, a: 1 },
+        loadOp: 'clear',
+        storeOp: 'store',
+      }],
+    });
+
+    sharpCopyPass.setPipeline(gpuBlurPipeline);
+    sharpCopyPass.setBindGroup(0, sharpCopyBg);
+    sharpCopyPass.draw(3, 1, 0, 0);
+    sharpCopyPass.end();
+    gpuDevice.queue.submit([commandEncoder.finish()]);
+  }
 
   // === Pass 3a: Apply global blur if enabled ===
   if (globalBlurStrength > 0) {
@@ -997,9 +1306,27 @@ export async function exportWithWebGPU(
       primitive: { topology: 'triangle-list' },
     });
 
-    // Create uniform buffers
+    // Create sharpen pipeline
+    const sharpenShaderModule = device.createShaderModule({ code: SHARPEN_SHADER_CODE });
+    const sharpenPipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: sharpenShaderModule, entryPoint: 'vs_main' },
+      fragment: { module: sharpenShaderModule, entryPoint: 'fs_main', targets: [{ format: 'rgba8unorm' }] },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    // Create denoise pipeline
+    const denoiseShaderModule = device.createShaderModule({ code: DENOISE_SHADER_CODE });
+    const denoisePipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module: denoiseShaderModule, entryPoint: 'vs_main' },
+      fragment: { module: denoiseShaderModule, entryPoint: 'fs_main', targets: [{ format: 'rgba8unorm' }] },
+      primitive: { topology: 'triangle-list' },
+    });
+
+    // Create uniform buffers — main buffer at 256 bytes to match preview pipeline
     const mainUniformBuffer = device.createBuffer({
-      size: 128,
+      size: 256,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -1012,6 +1339,38 @@ export async function exportWithWebGPU(
       size: 80,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    const sharpenUniformBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    const denoiseUniformBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+
+    // Create tone curve LUT texture for export
+    const curveLUTTexture = device.createTexture({
+      size: [256, 1, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const curveLUTSampler = device.createSampler({
+      magFilter: 'linear',
+      minFilter: 'linear',
+      addressModeU: 'clamp-to-edge',
+      addressModeV: 'clamp-to-edge',
+    });
+
+    // Upload tone curve LUT
+    const lutData = generateCurveLUT(adjustments.toneCurve);
+    device.queue.writeTexture(
+      { texture: curveLUTTexture },
+      lutData,
+      { bytesPerRow: 256 * 4 },
+      [256, 1, 1]
+    );
 
     // Create intermediate textures
     const intermediate1 = device.createTexture({
@@ -1043,8 +1402,9 @@ export async function exportWithWebGPU(
       scale: 1.0,
     };
 
-    // Prepare uniforms (grain=0 for main pass)
+    // Prepare uniforms (grain=0 for main pass, include HSL)
     const rotationRad = (transform.rotation * Math.PI) / 180;
+    const hsl = adjustments.hsl;
     const uniformData = new Float32Array([
       // Adjustments (11 floats) - grain set to 0
       adjustments.brightness, adjustments.contrast, adjustments.exposure,
@@ -1062,21 +1422,32 @@ export async function exportWithWebGPU(
       outputWidth, outputHeight,
       // Image dimensions (2 floats)
       bitmap.width, bitmap.height,
-      // Crop area (4 floats)
+      // Crop area (4 floats) — ends at index 26
       cropArea?.x ?? 0, cropArea?.y ?? 0,
       cropArea?.width ?? 0, cropArea?.height ?? 0,
-      // Padding
-      0, 0, 0, 0, 0
+      // Padding to align HSL vec4 block (5 floats: index 27-31)
+      0, 0, 0, 0, 0,
+      // HSL per-color (8 × vec4: h, s, l, 0) = 32 floats (index 32-63)
+      hsl.red.hue, hsl.red.saturation, hsl.red.luminance, 0,
+      hsl.orange.hue, hsl.orange.saturation, hsl.orange.luminance, 0,
+      hsl.yellow.hue, hsl.yellow.saturation, hsl.yellow.luminance, 0,
+      hsl.green.hue, hsl.green.saturation, hsl.green.luminance, 0,
+      hsl.aqua.hue, hsl.aqua.saturation, hsl.aqua.luminance, 0,
+      hsl.blue.hue, hsl.blue.saturation, hsl.blue.luminance, 0,
+      hsl.purple.hue, hsl.purple.saturation, hsl.purple.luminance, 0,
+      hsl.magenta.hue, hsl.magenta.saturation, hsl.magenta.luminance, 0,
     ]);
     device.queue.writeBuffer(mainUniformBuffer, 0, uniformData);
 
-    // Create bind group for main pass
+    // Create bind group for main pass (includes curve LUT texture)
     const mainBindGroup = device.createBindGroup({
       layout: mainPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: sampler },
         { binding: 1, resource: texture.createView() },
         { binding: 2, resource: { buffer: mainUniformBuffer } },
+        { binding: 3, resource: curveLUTSampler },
+        { binding: 4, resource: curveLUTTexture.createView() },
       ],
     });
 
@@ -1120,6 +1491,139 @@ export async function exportWithWebGPU(
     copyPass.draw(3, 1, 0, 0);
     copyPass.end();
     device.queue.submit([commandEncoder.finish()]);
+
+    // Pass 2b: Denoise (bilateral filter) if enabled
+    if (adjustments.denoise > 0) {
+      commandEncoder = device.createCommandEncoder();
+      const denoiseUniforms = new Float32Array([adjustments.denoise / 100, 0, 0, 0]);
+      device.queue.writeBuffer(denoiseUniformBuffer, 0, denoiseUniforms);
+
+      const denoiseBindGroup = device.createBindGroup({
+        layout: denoisePipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate4.createView() },
+          { binding: 2, resource: { buffer: denoiseUniformBuffer } },
+        ],
+      });
+
+      const denoisePass = commandEncoder.beginRenderPass({
+        colorAttachments: [{ view: intermediate2.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+      });
+      denoisePass.setPipeline(denoisePipeline);
+      denoisePass.setBindGroup(0, denoiseBindGroup);
+      denoisePass.draw(3, 1, 0, 0);
+      denoisePass.end();
+      device.queue.submit([commandEncoder.finish()]);
+
+      // Copy denoised → accumulator
+      commandEncoder = device.createCommandEncoder();
+      device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
+      const dnCopyBg = device.createBindGroup({
+        layout: blurPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate2.createView() },
+          { binding: 2, resource: { buffer: blurUniformBuffer } },
+        ],
+      });
+      const dnCopyPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{ view: intermediate4.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+      });
+      dnCopyPass.setPipeline(blurPipeline);
+      dnCopyPass.setBindGroup(0, dnCopyBg);
+      dnCopyPass.draw(3, 1, 0, 0);
+      dnCopyPass.end();
+      device.queue.submit([commandEncoder.finish()]);
+    }
+
+    // Pass 2c: Sharpen (unsharp mask) if enabled
+    if (adjustments.sharpen > 0) {
+      const sharpenBlurRadius = 4; // σ≈1.3
+
+      // Horizontal blur → intermediate2
+      commandEncoder = device.createCommandEncoder();
+      device.queue.writeBuffer(blurUniformBuffer, 0, new Float32Array([1.0, 0.0, sharpenBlurRadius, 0.0]));
+      const shBgH = device.createBindGroup({
+        layout: blurPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate4.createView() },
+          { binding: 2, resource: { buffer: blurUniformBuffer } },
+        ],
+      });
+      const shPassH = commandEncoder.beginRenderPass({
+        colorAttachments: [{ view: intermediate2.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+      });
+      shPassH.setPipeline(blurPipeline);
+      shPassH.setBindGroup(0, shBgH);
+      shPassH.draw(3, 1, 0, 0);
+      shPassH.end();
+      device.queue.submit([commandEncoder.finish()]);
+
+      // Vertical blur → intermediate3
+      commandEncoder = device.createCommandEncoder();
+      device.queue.writeBuffer(blurUniformBuffer, 0, new Float32Array([0.0, 1.0, sharpenBlurRadius, 0.0]));
+      const shBgV = device.createBindGroup({
+        layout: blurPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate2.createView() },
+          { binding: 2, resource: { buffer: blurUniformBuffer } },
+        ],
+      });
+      const shPassV = commandEncoder.beginRenderPass({
+        colorAttachments: [{ view: intermediate3.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+      });
+      shPassV.setPipeline(blurPipeline);
+      shPassV.setBindGroup(0, shBgV);
+      shPassV.draw(3, 1, 0, 0);
+      shPassV.end();
+      device.queue.submit([commandEncoder.finish()]);
+
+      // Unsharp mask composite: original(intermediate4) + blurred(intermediate3) → intermediate2
+      commandEncoder = device.createCommandEncoder();
+      const sharpAmt = adjustments.sharpen / 50.0;
+      const sharpThresh = 0.01 + adjustments.sharpen * 0.0004;
+      device.queue.writeBuffer(sharpenUniformBuffer, 0, new Float32Array([sharpAmt, sharpThresh, 0, 0]));
+      const sharpBg = device.createBindGroup({
+        layout: sharpenPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate4.createView() },
+          { binding: 2, resource: intermediate3.createView() },
+          { binding: 3, resource: { buffer: sharpenUniformBuffer } },
+        ],
+      });
+      const sharpPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{ view: intermediate2.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+      });
+      sharpPass.setPipeline(sharpenPipeline);
+      sharpPass.setBindGroup(0, sharpBg);
+      sharpPass.draw(3, 1, 0, 0);
+      sharpPass.end();
+      device.queue.submit([commandEncoder.finish()]);
+
+      // Copy sharpened → accumulator
+      commandEncoder = device.createCommandEncoder();
+      device.queue.writeBuffer(blurUniformBuffer, 0, BLUR_UNIFORMS_ZERO);
+      const shCopyBg = device.createBindGroup({
+        layout: blurPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: sampler },
+          { binding: 1, resource: intermediate2.createView() },
+          { binding: 2, resource: { buffer: blurUniformBuffer } },
+        ],
+      });
+      const shCopyPass = commandEncoder.beginRenderPass({
+        colorAttachments: [{ view: intermediate4.createView(), clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
+      });
+      shCopyPass.setPipeline(blurPipeline);
+      shCopyPass.setBindGroup(0, shCopyBg);
+      shCopyPass.draw(3, 1, 0, 0);
+      shCopyPass.end();
+      device.queue.submit([commandEncoder.finish()]);
+    }
 
     // Pass 3a: Apply global blur if needed
     if (adjustments.blur > 0) {
@@ -1418,6 +1922,9 @@ export async function exportWithWebGPU(
             mainUniformBuffer.destroy();
             blurUniformBuffer.destroy();
             grainUniformBuffer.destroy();
+            sharpenUniformBuffer.destroy();
+            denoiseUniformBuffer.destroy();
+            curveLUTTexture.destroy();
             return null;
           }
         }
@@ -1436,6 +1943,9 @@ export async function exportWithWebGPU(
     mainUniformBuffer.destroy();
     blurUniformBuffer.destroy();
     grainUniformBuffer.destroy();
+    sharpenUniformBuffer.destroy();
+    denoiseUniformBuffer.destroy();
+    curveLUTTexture.destroy();
 
     return canvas;
   } catch (error) {

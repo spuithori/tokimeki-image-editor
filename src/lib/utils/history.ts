@@ -1,4 +1,8 @@
-import type { HistorySnapshot, EditorHistory } from '../types';
+import type { HistorySnapshot, EditorHistory, CropArea, TransformState, AdjustmentsState, Viewport, BlurArea, StampArea, Annotation } from '../types';
+
+// Re-export types for convenience
+export type { HistorySnapshot, EditorHistory };
+export type EditorSnapshot = HistorySnapshot;
 
 // Maximum number of history states to keep
 export const MAX_HISTORY_SIZE = 50;
@@ -12,24 +16,42 @@ export function createEmptyHistory(): EditorHistory {
 }
 
 export function createSnapshot(
-  cropArea: any,
-  transform: any,
-  adjustments: any,
-  viewport: any,
-  blurAreas: any[] = [],
-  stampAreas: any[] = [],
-  annotations: any[] = []
+  cropArea: CropArea | null,
+  transform: TransformState,
+  adjustments: AdjustmentsState,
+  viewport: Viewport,
+  blurAreas: BlurArea[] = [],
+  stampAreas: StampArea[] = [],
+  annotations: Annotation[] = []
 ): HistorySnapshot {
   return {
     cropArea: cropArea ? { ...cropArea } : null,
     transform: { ...transform },
-    adjustments: { ...adjustments },
+    adjustments: {
+      ...adjustments,
+      toneCurve: {
+        rgb: adjustments.toneCurve.rgb.map(p => ({ ...p })),
+        red: adjustments.toneCurve.red.map(p => ({ ...p })),
+        green: adjustments.toneCurve.green.map(p => ({ ...p })),
+        blue: adjustments.toneCurve.blue.map(p => ({ ...p })),
+      },
+      hsl: {
+        red: { ...adjustments.hsl.red },
+        orange: { ...adjustments.hsl.orange },
+        yellow: { ...adjustments.hsl.yellow },
+        green: { ...adjustments.hsl.green },
+        aqua: { ...adjustments.hsl.aqua },
+        blue: { ...adjustments.hsl.blue },
+        purple: { ...adjustments.hsl.purple },
+        magenta: { ...adjustments.hsl.magenta },
+      },
+    },
     viewport: { ...viewport },
     blurAreas: blurAreas.map(area => ({ ...area })),
     stampAreas: stampAreas.map(area => ({ ...area })),
     annotations: annotations.map(annotation => ({
       ...annotation,
-      points: annotation.points.map((p: any) => ({ ...p }))
+      points: annotation.points.map(p => ({ ...p }))
     }))
   };
 }
