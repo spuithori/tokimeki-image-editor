@@ -508,8 +508,8 @@ export function renderWithAdjustments(
       cropArea?.width ?? 0,
       cropArea?.height ?? 0,
 
-      // Padding to align HSL vec4 block (5 floats: index 27-31)
-      0, 0, 0, 0, 0,
+      // Clear color (3 floats: index 27-29) + padding (2 floats: index 30-31)
+      canvasClearColor.r, canvasClearColor.g, canvasClearColor.b, 0, 0,
 
       // HSL per-color (8 × vec4: h, s, l, 0) = 32 floats (index 32-63)
       hsl.red.hue, hsl.red.saturation, hsl.red.luminance, 0,
@@ -1425,7 +1425,7 @@ export async function exportWithWebGPU(
       // Crop area (4 floats) — ends at index 26
       cropArea?.x ?? 0, cropArea?.y ?? 0,
       cropArea?.width ?? 0, cropArea?.height ?? 0,
-      // Padding to align HSL vec4 block (5 floats: index 27-31)
+      // Clear color (3 floats) + padding (2 floats) — export uses black background
       0, 0, 0, 0, 0,
       // HSL per-color (8 × vec4: h, s, l, 0) = 32 floats (index 32-63)
       hsl.red.hue, hsl.red.saturation, hsl.red.luminance, 0,

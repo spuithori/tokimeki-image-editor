@@ -43,13 +43,12 @@ struct Uniforms {
   cropWidth: f32,
   cropHeight: f32,
 
-  // Padding to align HSL block to 16-byte boundary
-  // After cropHeight we're at offset 27*4=108, need to reach offset 128 (32*4) for vec4 alignment
+  // Canvas clear color (3 params) + padding to align HSL vec4 block
+  clearR: f32,
+  clearG: f32,
+  clearB: f32,
   _padAlign0: f32,
   _padAlign1: f32,
-  _padAlign2: f32,
-  _padAlign3: f32,
-  _padAlign4: f32,
 
   // HSL per-color adjustment (8 colors × vec4 = 32 floats, starting at offset 128)
   // Each vec4: (hue_shift, saturation_adj, luminance_adj, unused)
@@ -278,12 +277,13 @@ fn fs_main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     }
   }
 
-  // Apply tone curve for visible pixels; black for out-of-bounds/crop
-  if (isVisible) {
-    rgb = vec3<f32>(curveSampleR.r, curveSampleG.g, curveSampleB.b);
-  } else {
-    rgb = vec3<f32>(0.0);
+  // Out-of-bounds: output the canvas clear color (theme-aware)
+  if (!isVisible) {
+    return vec4<f32>(params.clearR, params.clearG, params.clearB, 1.0);
   }
+
+  // Apply tone curve for visible pixels
+  rgb = vec3<f32>(curveSampleR.r, curveSampleG.g, curveSampleB.b);
 
   // 1. Brightness
   if (params.brightness != 0.0) {

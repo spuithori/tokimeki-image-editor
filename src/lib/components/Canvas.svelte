@@ -164,7 +164,7 @@
     viewport.offsetX; viewport.offsetY; viewport.zoom; viewport.scale;
     transform.rotation; transform.flipHorizontal; transform.flipVertical; transform.scale;
     cropArea; cropArea?.x; cropArea?.y; cropArea?.width; cropArea?.height;
-    blurAreas; stampAreas; annotations; width; height;
+    blurAreas; stampAreas; annotations; width; height; theme;
   });
 
   // 2D Canvas: Render when parameters change
