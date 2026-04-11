@@ -496,7 +496,7 @@ export async function exportImage(state: EditorState): Promise<ExportResult | nu
     state.annotations
   );
 
-  const format = state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png';
+  const format = state.exportOptions.format === 'png' ? 'image/png' : 'image/jpeg';
 
   // Single async encode (toBlob) — avoids synchronous toDataURL blocking the main thread
   const blob = await new Promise<Blob>((resolve) => {

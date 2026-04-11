@@ -13,3 +13,4 @@ vite.config.ts.timestamp-*
 dist
 src/routes/quick
 static/oekaki.png
+sample-images/

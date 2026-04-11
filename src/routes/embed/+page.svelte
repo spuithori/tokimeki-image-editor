@@ -423,8 +423,8 @@
     to { opacity: 1; }
   }
   .editor-frame {
-    width: min(1240px, 100%);
-    height: min(800px, 100%);
+    width: 100%;
+    height: 100%;
     display: flex;
     align-items: stretch;
     justify-content: center;
