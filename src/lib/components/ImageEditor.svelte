@@ -39,12 +39,11 @@
     getKeyboardAction,
     applyKeyboardAction,
     exportImage,
-    downloadExportedImage,
     getDroppedFile,
     getInputFile,
     handleDragOver
   } from '../utils/editor-core';
-  import { calculateFitScale } from '../utils/canvas';
+  import { calculateFitScale, downloadImage } from '../utils/canvas';
   import { haptic } from '../utils/haptics';
   import BottomDock from './BottomDock.svelte';
   import IconButton from './IconButton.svelte';
@@ -265,9 +264,11 @@
 
   async function handleExport() {
     haptic('success');
-    await downloadExportedImage(state);
     const result = await exportImage(state);
-    if (result && onExport) onExport(result.dataUrl);
+    if (!result) return;
+    const filename = `edited-image-${Date.now()}.${state.exportOptions.format}`;
+    downloadImage(result.dataUrl, filename);
+    if (onExport) onExport(result.dataUrl);
   }
 
   async function handleComplete() {

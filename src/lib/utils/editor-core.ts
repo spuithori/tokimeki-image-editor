@@ -497,34 +497,28 @@ export async function exportImage(state: EditorState): Promise<ExportResult | nu
   );
 
   const format = state.exportOptions.format === 'jpeg' ? 'image/jpeg' : 'image/png';
-  const dataUrl = exportCanvas.toDataURL(format, state.exportOptions.quality);
 
+  // Single async encode (toBlob) — avoids synchronous toDataURL blocking the main thread
   const blob = await new Promise<Blob>((resolve) => {
     exportCanvas.toBlob(b => resolve(b!), format, state.exportOptions.quality);
   });
 
-  const bitmap = await createImageBitmap(blob);
-  const result = {
+  // Convert blob to data URL without re-encoding (just base64-wraps the existing bytes)
+  const dataUrl = await new Promise<string>((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.readAsDataURL(blob);
+  });
+
+  // Dimensions directly from the export canvas (already crop+rotation adjusted)
+  return {
     dataUrl,
     blob,
-    width: bitmap.width,
-    height: bitmap.height
+    width: exportCanvas.width,
+    height: exportCanvas.height
   };
-  bitmap.close();
-
-  return result;
 }
 
-/**
- * Download exported image
- */
-export async function downloadExportedImage(state: EditorState): Promise<void> {
-  const result = await exportImage(state);
-  if (!result) return;
-
-  const filename = `edited-image-${Date.now()}.${state.exportOptions.format}`;
-  downloadImage(result.dataUrl, filename);
-}
 
 // ============================================================================
 // ANNOTATION HELPERS (for QuickDrawEditor)
