@@ -159,7 +159,7 @@
     if (useWebGPU && webgpuReady && currentImage && canvasElement) {
       renderWebGPU();
     }
-    adjustments.brightness; adjustments.contrast; adjustments.saturation;
+    adjustments; // Track all adjustment properties (blur, grain, sharpen, denoise, vignette, etc.)
     viewport.offsetX; viewport.offsetY; viewport.zoom; viewport.scale;
     transform.rotation; transform.flipHorizontal; transform.flipVertical; transform.scale;
     cropArea; cropArea?.x; cropArea?.y; cropArea?.width; cropArea?.height;
@@ -306,7 +306,6 @@
     if (result) {
       interactionState = result.state;
       if (result.viewportUpdate && onViewportChange) onViewportChange(result.viewportUpdate);
-      if (result.zoomInfo && onZoom) onZoom(result.zoomInfo.delta, result.zoomInfo.centerX, result.zoomInfo.centerY);
     }
   }
 

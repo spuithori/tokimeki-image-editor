@@ -785,15 +785,6 @@ export function handleQuickDrawTouchMove(
     if (result.viewportUpdate) {
       newState = { ...newState, viewport: updateViewport(newState.viewport, result.viewportUpdate) };
     }
-    if (result.zoomInfo && canvasRect) {
-      newState = {
-        ...newState,
-        viewport: calculateZoomViewport(
-          newState.viewport, result.zoomInfo.delta, canvasWidth, canvasHeight,
-          result.zoomInfo.centerX, result.zoomInfo.centerY, canvasRect
-        )
-      };
-    }
     return newState;
   }
   return state;

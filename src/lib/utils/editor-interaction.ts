@@ -249,7 +249,6 @@ export function handlePureTouchMove(
 ): {
   state: EditorInteractionState;
   viewportUpdate?: { zoom?: number; offsetX: number; offsetY: number };
-  zoomInfo?: { delta: number; centerX: number; centerY: number };
 } | null {
   if (!ctx.canvas || !ctx.image) return null;
 
@@ -693,7 +692,6 @@ export function handleOverlayTouchMove(
 ): {
   state: EditorInteractionState;
   viewportUpdate?: { zoom?: number; offsetX: number; offsetY: number };
-  zoomInfo?: { delta: number; centerX: number; centerY: number };
 } | null {
   if (!ctx.canvas || !ctx.image) return null;
 

@@ -180,32 +180,12 @@
     const mouseX = coords.clientX - rect.left;
     const mouseY = coords.clientY - rect.top;
 
-    // Handle viewport panning
+    // Handle viewport panning (using shared utility)
     if (isPanning && onViewportChange) {
       const deltaX = coords.clientX - lastPanPosition.x;
       const deltaY = coords.clientY - lastPanPosition.y;
-
-      const imgWidth = image.width;
-      const imgHeight = image.height;
-      const totalScale = viewport.scale * viewport.zoom;
-      const scaledWidth = imgWidth * totalScale;
-      const scaledHeight = imgHeight * totalScale;
-
-      const overflowMargin = 0.2;
-      const maxOffsetX = (scaledWidth / 2) - (canvas.width / 2) + (canvas.width * overflowMargin);
-      const maxOffsetY = (scaledHeight / 2) - (canvas.height / 2) + (canvas.height * overflowMargin);
-
-      const newOffsetX = viewport.offsetX + deltaX;
-      const newOffsetY = viewport.offsetY + deltaY;
-
-      const clampedOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
-      const clampedOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
-
-      onViewportChange({
-        offsetX: clampedOffsetX,
-        offsetY: clampedOffsetY
-      });
-
+      const result = calculatePanOffset(viewport, deltaX, deltaY, image.width, image.height, canvas.width, canvas.height, cropArea);
+      onViewportChange(result);
       lastPanPosition = { x: coords.clientX, y: coords.clientY };
       event.preventDefault();
       return;
