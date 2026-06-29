@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
-  import { X, Trash2, Droplet, Info } from 'lucide-svelte';
+  import X from '@lucide/svelte/icons/x';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Droplet from '@lucide/svelte/icons/droplet';
+  import Info from '@lucide/svelte/icons/info';
   import type { BlurArea, Viewport, TransformState, CropArea } from '../types';
   import { screenToImageCoords, imageToCanvasCoords } from '../utils/canvas';
   import { calculateZoomViewport, calculatePanOffset } from '../utils/editor-interaction';

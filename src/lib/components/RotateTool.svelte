@@ -1,6 +1,9 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { RotateCw, RotateCcw, FlipHorizontal, FlipVertical } from 'lucide-svelte';
+  import RotateCw from '@lucide/svelte/icons/rotate-cw';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import FlipHorizontal from '@lucide/svelte/icons/flip-horizontal';
+  import FlipVertical from '@lucide/svelte/icons/flip-vertical';
   import type { TransformState } from '../types';
   import ToolPanel from './ToolPanel.svelte';
   import { haptic } from '../utils/haptics';

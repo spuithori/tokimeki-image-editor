@@ -2,7 +2,14 @@
   import '$lib/i18n';
   import '../styles/tokens.css';
   import { _ } from 'svelte-i18n';
-  import { Redo2, Undo2, RotateCcw, ImagePlus, Check, Sparkles, Download, LoaderCircle } from 'lucide-svelte';
+  import Redo2 from '@lucide/svelte/icons/redo-2';
+  import Undo2 from '@lucide/svelte/icons/undo-2';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import ImagePlus from '@lucide/svelte/icons/image-plus';
+  import Check from '@lucide/svelte/icons/check';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import Download from '@lucide/svelte/icons/download';
+  import LoaderCircle from '@lucide/svelte/icons/loader-circle';
   import type {
     EditorMode,
     EditorState,

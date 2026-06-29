@@ -1,6 +1,12 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { Crop, SlidersHorizontal, Sparkles, Droplet, Sticker, PenLine, Download } from 'lucide-svelte';
+  import Crop from '@lucide/svelte/icons/crop';
+  import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import Droplet from '@lucide/svelte/icons/droplet';
+  import Sticker from '@lucide/svelte/icons/sticker';
+  import PenLine from '@lucide/svelte/icons/pen-line';
+  import Download from '@lucide/svelte/icons/download';
   import type { EditorMode } from '../types';
   import { haptic } from '../utils/haptics';
 

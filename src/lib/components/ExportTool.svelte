@@ -1,6 +1,8 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { Download, FileImage, ImageDown } from 'lucide-svelte';
+  import Download from '@lucide/svelte/icons/download';
+  import FileImage from '@lucide/svelte/icons/file-image';
+  import ImageDown from '@lucide/svelte/icons/image-down';
   import type { ExportOptions } from '../types';
   import ToolPanel from './ToolPanel.svelte';
   import Slider from './Slider.svelte';

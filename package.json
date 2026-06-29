@@ -24,8 +24,8 @@
     "svelte": "^5.55.2"
   },
   "dependencies": {
+    "@lucide/svelte": "^1.22.0",
     "@sveltejs/adapter-auto": "^7.0.1",
-    "lucide-svelte": "^0.548.0",
     "rbush": "^4.0.1",
     "runed": "^0.35.1",
     "svelte-i18n": "^4.0.1",

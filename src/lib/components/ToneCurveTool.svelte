@@ -1,6 +1,6 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import { RotateCcw } from 'lucide-svelte';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import type { ToneCurve, ToneCurvePoint } from '../types';
   import { haptic } from '../utils/haptics';
 

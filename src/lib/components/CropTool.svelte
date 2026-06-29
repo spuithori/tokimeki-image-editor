@@ -1,20 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { _ } from 'svelte-i18n';
-  import {
-    RotateCw,
-    RotateCcw,
-    FlipHorizontal,
-    FlipVertical,
-    X,
-    Check,
-    Crop as CropIcon,
-    Lock,
-    Unlock,
-    Repeat2,
-    RotateCcwSquare,
-    Maximize2
-  } from 'lucide-svelte';
+  import RotateCw from '@lucide/svelte/icons/rotate-cw';
+  import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+  import FlipHorizontal from '@lucide/svelte/icons/flip-horizontal';
+  import FlipVertical from '@lucide/svelte/icons/flip-vertical';
+  import X from '@lucide/svelte/icons/x';
+  import Check from '@lucide/svelte/icons/check';
+  import CropIcon from '@lucide/svelte/icons/crop';
+  import Lock from '@lucide/svelte/icons/lock';
+  import Unlock from '@lucide/svelte/icons/unlock';
+  import Repeat2 from '@lucide/svelte/icons/repeat-2';
+  import RotateCcwSquare from '@lucide/svelte/icons/rotate-ccw-square';
+  import Maximize2 from '@lucide/svelte/icons/maximize-2';
   import type { CropArea, Viewport, TransformState } from '../types';
   import { screenToImageCoords, imageToCanvasCoords } from '../utils/canvas';
   import FloatingRail from './FloatingRail.svelte';

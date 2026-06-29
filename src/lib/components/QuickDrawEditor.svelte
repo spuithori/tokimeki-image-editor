@@ -28,7 +28,9 @@
   } from '../utils/editor-core';
   import { DEFAULT_COLOR_PRESETS, DEFAULT_STROKE_WIDTH } from '../utils/colors';
   import Canvas from './Canvas.svelte';
-  import { Pencil, Brush, PaintBucket } from 'lucide-svelte';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Brush from '@lucide/svelte/icons/brush';
+  import PaintBucket from '@lucide/svelte/icons/paint-bucket';
   import { initWasm } from '../wasm/stroke-processor';
   import { haptic } from '../utils/haptics';
 

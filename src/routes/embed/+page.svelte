@@ -1,6 +1,11 @@
 <script lang="ts">
   import { ImageEditor, type Theme } from '$lib';
-  import { Pencil, Image as ImageIcon, RefreshCw, Sun, Moon, Monitor } from 'lucide-svelte';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import ImageIcon from '@lucide/svelte/icons/image';
+  import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import Sun from '@lucide/svelte/icons/sun';
+  import Moon from '@lucide/svelte/icons/moon';
+  import Monitor from '@lucide/svelte/icons/monitor';
 
   let showEditor = $state(false);
   let theme = $state<Theme>('dark');

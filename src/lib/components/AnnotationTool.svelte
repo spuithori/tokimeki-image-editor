@@ -52,7 +52,19 @@
     imageToCanvasCoords as sharedImageToCanvasCoords,
     type CoordinateContext
   } from '../utils/coordinates';
-  import { Pencil, Eraser, ArrowRight, Square, Brush, Type, PaintBucket, X, Trash2, Sparkles, Layers, ImageOff, EyeOff } from 'lucide-svelte';
+  import Pencil from '@lucide/svelte/icons/pencil';
+  import Eraser from '@lucide/svelte/icons/eraser';
+  import ArrowRight from '@lucide/svelte/icons/arrow-right';
+  import Square from '@lucide/svelte/icons/square';
+  import Brush from '@lucide/svelte/icons/brush';
+  import Type from '@lucide/svelte/icons/type';
+  import PaintBucket from '@lucide/svelte/icons/paint-bucket';
+  import X from '@lucide/svelte/icons/x';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import Layers from '@lucide/svelte/icons/layers';
+  import ImageOff from '@lucide/svelte/icons/image-off';
+  import EyeOff from '@lucide/svelte/icons/eye-off';
   import FloatingRail from './FloatingRail.svelte';
   import RailButton from './RailButton.svelte';
   import Popover from './Popover.svelte';

@@ -1,21 +1,19 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import {
-    Sun,
-    Contrast,
-    Cloud,
-    Moon,
-    SunMedium,
-    Palette,
-    Thermometer,
-    Aperture,
-    Waves,
-    Sparkles,
-    Focus,
-    AudioWaveform,
-    Spline,
-    Droplets
-  } from 'lucide-svelte';
+  import Sun from '@lucide/svelte/icons/sun';
+  import Contrast from '@lucide/svelte/icons/contrast';
+  import Cloud from '@lucide/svelte/icons/cloud';
+  import Moon from '@lucide/svelte/icons/moon';
+  import SunMedium from '@lucide/svelte/icons/sun-medium';
+  import Palette from '@lucide/svelte/icons/palette';
+  import Thermometer from '@lucide/svelte/icons/thermometer';
+  import Aperture from '@lucide/svelte/icons/aperture';
+  import Waves from '@lucide/svelte/icons/waves';
+  import Sparkles from '@lucide/svelte/icons/sparkles';
+  import Focus from '@lucide/svelte/icons/focus';
+  import AudioWaveform from '@lucide/svelte/icons/audio-waveform';
+  import Spline from '@lucide/svelte/icons/spline';
+  import Droplets from '@lucide/svelte/icons/droplets';
   import type { AdjustmentsState, ToneCurve, HSLAdjustment } from '../types';
   import ToolPanel from './ToolPanel.svelte';
   import Slider from './Slider.svelte';

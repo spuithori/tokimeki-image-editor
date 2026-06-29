@@ -4,7 +4,10 @@
   import type { StampArea, Viewport, TransformState, CropArea, StampAsset } from '../types';
   import { STAMP_ASSETS } from '../config/stamps';
   import { preloadStampImage } from '../utils/canvas';
-  import { RotateCw, Trash2, X, Sticker } from 'lucide-svelte';
+  import RotateCw from '@lucide/svelte/icons/rotate-cw';
+  import Trash2 from '@lucide/svelte/icons/trash-2';
+  import X from '@lucide/svelte/icons/x';
+  import Sticker from '@lucide/svelte/icons/sticker';
   import FloatingRail from './FloatingRail.svelte';
   import RailButton from './RailButton.svelte';
   import Popover from './Popover.svelte';
