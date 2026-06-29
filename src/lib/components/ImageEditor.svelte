@@ -275,11 +275,16 @@
     if (!onComplete || isApplying) return;
     isApplying = true;
     haptic('success');
+    const _DEV = import.meta.env.DEV;
+    if (_DEV) console.time('[handleComplete] total');
     try {
       const result = await exportImage(state);
+      if (_DEV) console.time('[handleComplete] onComplete callback');
       if (result) onComplete(result.dataUrl, { blob: result.blob, width: result.width, height: result.height });
+      if (_DEV) console.timeEnd('[handleComplete] onComplete callback');
     } finally {
       isApplying = false;
+      if (_DEV) console.timeEnd('[handleComplete] total');
     }
   }
 

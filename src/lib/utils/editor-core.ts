@@ -66,8 +66,8 @@ export function createDefaultTransform(): TransformState {
  */
 export function createDefaultExportOptions(): ExportOptions {
   return {
-    format: 'png',
-    quality: 0.9
+    format: 'jpeg',
+    quality: 0.92
   };
 }
 
@@ -481,11 +481,40 @@ export interface ExportResult {
 }
 
 /**
+ * Encode pixel data to Blob in a Web Worker.
+ * Completely isolated from main thread GPU/compositor — avoids the browser
+ * layerization bottleneck that makes toBlob extremely slow on complex pages.
+ */
+function encodeInWorker(imageData: ImageData, format: string, quality: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const code = `self.onmessage=async e=>{const{pixels,w,h,fmt,q}=e.data;const c=new OffscreenCanvas(w,h);c.getContext("2d").putImageData(new ImageData(new Uint8ClampedArray(pixels),w,h),0,0);const b=await c.convertToBlob({type:fmt,quality:q});self.postMessage(b)}`;
+    const url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+    const worker = new Worker(url);
+    worker.onmessage = (e) => {
+      resolve(e.data as Blob);
+      worker.terminate();
+      URL.revokeObjectURL(url);
+    };
+    worker.onerror = (e) => {
+      reject(new Error('Worker encode failed: ' + e.message));
+      worker.terminate();
+      URL.revokeObjectURL(url);
+    };
+    // Transfer the ArrayBuffer (zero-copy)
+    const buffer = imageData.data.buffer;
+    worker.postMessage({ pixels: buffer, w: imageData.width, h: imageData.height, fmt: format, q: quality }, [buffer]);
+  });
+}
+
+/**
  * Export editor state to image
  */
 export async function exportImage(state: EditorState): Promise<ExportResult | null> {
   if (!state.imageData.original) return null;
 
+  const _DEV = import.meta.env.DEV;
+  if (_DEV) console.time('[export] total');
+  if (_DEV) console.time('[export] 1. WebGPU render');
   const exportCanvas = await applyTransformWithWebGPU(
     state.imageData.original,
     state.transform,
@@ -495,20 +524,39 @@ export async function exportImage(state: EditorState): Promise<ExportResult | nu
     state.stampAreas,
     state.annotations
   );
+  if (_DEV) console.timeEnd('[export] 1. WebGPU render');
 
   const format = state.exportOptions.format === 'png' ? 'image/png' : 'image/jpeg';
+  const w = exportCanvas.width;
+  const h = exportCanvas.height;
 
-  // Single async encode (toBlob) — avoids synchronous toDataURL blocking the main thread
-  const blob = await new Promise<Blob>((resolve) => {
-    exportCanvas.toBlob(b => resolve(b!), format, state.exportOptions.quality);
-  });
+  // Extract pixel data on main thread.
+  // If the canvas has a WebGPU context, getContext('2d') returns null —
+  // copy to a Canvas2D first via drawImage.
+  if (_DEV) console.time('[export] 2. getImageData');
+  let ctx = exportCanvas.getContext('2d');
+  if (!ctx) {
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    ctx = tmp.getContext('2d')!;
+    ctx.drawImage(exportCanvas, 0, 0);
+  }
+  const imageData = ctx.getImageData(0, 0, w, h);
+  if (_DEV) console.timeEnd('[export] 2. getImageData');
 
-  // Convert blob to data URL without re-encoding (just base64-wraps the existing bytes)
+  // Encode in a Web Worker to completely isolate from main thread GPU/compositor
+  if (_DEV) console.time('[export] 3. worker encode');
+  const blob = await encodeInWorker(imageData, format, state.exportOptions.quality);
+  if (_DEV) { console.timeEnd('[export] 3. worker encode'); console.log('[export] blob:', (blob.size / 1024 / 1024).toFixed(1) + 'MB'); }
+
+  if (_DEV) console.time('[export] 4. readAsDataURL');
   const dataUrl = await new Promise<string>((resolve) => {
     const reader = new FileReader();
     reader.onload = () => resolve(reader.result as string);
     reader.readAsDataURL(blob);
   });
+  if (_DEV) { console.timeEnd('[export] 4. readAsDataURL'); console.timeEnd('[export] total'); }
 
   // Dimensions directly from the export canvas (already crop+rotation adjusted)
   return {

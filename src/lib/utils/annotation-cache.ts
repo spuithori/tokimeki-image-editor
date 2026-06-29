@@ -717,16 +717,21 @@ export function updateAnnotationCache(
   const originX = (0 - cropOffsetX - sourceWidth / 2) * totalScale + cacheCenterX;
   const originY = (0 - cropOffsetY - sourceHeight / 2) * totalScale + cacheCenterY;
 
+  // DPR scaling for crisp rendering on high-DPI displays
+  const dpr = window.devicePixelRatio || 1;
+
   // Reuse existing canvas if possible, resize if needed
   let committedCanvas = state.committedCanvas;
   if (!committedCanvas) {
     committedCanvas = document.createElement('canvas');
   }
 
-  // Resize canvas if dimensions changed (this also clears the canvas)
-  if (committedCanvas.width !== cacheWidth || committedCanvas.height !== cacheHeight) {
-    committedCanvas.width = cacheWidth;
-    committedCanvas.height = cacheHeight;
+  // Resize canvas at physical pixel dimensions (this also clears the canvas)
+  const physicalCacheWidth = Math.round(cacheWidth * dpr);
+  const physicalCacheHeight = Math.round(cacheHeight * dpr);
+  if (committedCanvas.width !== physicalCacheWidth || committedCanvas.height !== physicalCacheHeight) {
+    committedCanvas.width = physicalCacheWidth;
+    committedCanvas.height = physicalCacheHeight;
   }
 
   const ctx = committedCanvas.getContext('2d');
@@ -739,7 +744,8 @@ export function updateAnnotationCache(
   const allAnnotations = annotations;
 
   if (needsRebuild && !canIncremental) {
-    // Full rebuild
+    // Full rebuild — setTransform so all drawing uses logical coordinates
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cacheWidth, cacheHeight);
 
     // Render fills first
@@ -756,7 +762,9 @@ export function updateAnnotationCache(
       }
     }
   } else if (canIncremental) {
-    // Incremental update - only add new annotations
+    // Incremental update - ensure DPR transform is set
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Only add new annotations
     const newAnnotations = annotations.slice(state.committedCount);
 
     // Render fills first among new annotations
@@ -807,8 +815,12 @@ export function renderAnnotationsWithCache(
   const ctx = targetCanvas.getContext('2d');
   if (!ctx) return;
 
-  const width = targetCanvas.width;
-  const height = targetCanvas.height;
+  const dpr = window.devicePixelRatio || 1;
+  const width = targetCanvas.width / dpr;   // logical dimensions
+  const height = targetCanvas.height / dpr;
+
+  // DPR transform — all drawing below uses logical coordinates
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   // Clear target
   ctx.clearRect(0, 0, width, height);
@@ -817,15 +829,14 @@ export function renderAnnotationsWithCache(
   // Cache is larger than display and centered, so we need to calculate
   // which part of the cache to draw based on viewport offset
   if (cacheState.committedCanvas && cacheState.cacheWidth > 0) {
-    // Source coordinates in the cache canvas
-    // Cache center corresponds to display center at offset 0
+    // Source coordinates in logical space, multiplied by DPR for physical cache pixels
     const srcX = cacheState.cacheOriginX - viewport.offsetX;
     const srcY = cacheState.cacheOriginY - viewport.offsetY;
 
     ctx.drawImage(
       cacheState.committedCanvas,
-      srcX, srcY, width, height,  // Source rectangle
-      0, 0, width, height          // Destination rectangle
+      srcX * dpr, srcY * dpr, width * dpr, height * dpr,  // Source: physical pixels
+      0, 0, width, height                                    // Dest: logical (scaled by transform)
     );
   }
 

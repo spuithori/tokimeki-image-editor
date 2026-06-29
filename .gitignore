@@ -14,3 +14,4 @@ dist
 src/routes/quick
 static/oekaki.png
 sample-images/
+src/routes/embed-heavy

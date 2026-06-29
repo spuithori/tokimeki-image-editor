@@ -71,6 +71,7 @@
       lockedAspectRatio = 1 / lockedAspectRatio;
     }
     haptic('selection');
+    autoFit(300);
   }
 
   function resetCrop() {
@@ -79,6 +80,7 @@
     aspectLocked = false;
     lockedAspectRatio = null;
     haptic('warning');
+    autoFit(300);
   }
 
   // Display helpers
@@ -144,19 +146,17 @@
   let resizeHandle = $state<string | null>(null);
   let initialCropArea = $state<CropArea | null>(null);
 
-  // Viewport panning state.
-  //   'frame'  — drag inside frame: image scrolls under stationary frame (iOS Photos)
-  //   'canvas' — drag outside frame: viewport itself moves (image + frame together)
+  // Viewport panning state — all drags move the image under a stationary frame (Lightroom style).
   let isPanning = $state(false);
-  let panType = $state<'frame' | 'canvas'>('frame');
   let lastPanPosition = $state({ x: 0, y: 0 });
 
-  // Touch pinch zoom state — pinch now zooms the underlying image, not the crop area.
+  // Touch pinch zoom state — pinch changes cropArea (not viewport.zoom) for crop-contextual zoom.
   let initialPinchDistance = $state(0);
-  let initialPinchZoom = $state(1);
+  let initialPinchCropArea = $state<CropArea | null>(null);
+  let initialPinchFocusRel = $state({ x: 0.5, y: 0.5 });
 
   // True when any drag-like interaction is in progress (used to brighten the grid)
-  let isInteracting = $derived(isResizing || isPanning);
+  let isInteracting = $derived(isResizing || isPanning || initialPinchDistance > 0);
 
   // SVG render constants — placed up here, derived geometry placed after canvasCoords below
   const cornerLen = 22;
@@ -214,6 +214,7 @@
     }
 
     return () => {
+      cancelAnimation();
       if (containerElement) {
         containerElement.removeEventListener('touchstart', handleContainerTouchStartUnified as any);
         containerElement.removeEventListener('touchmove', handleContainerTouchMoveUnified as any);
@@ -243,11 +244,14 @@
           height: image.height
         };
       }
+      // Auto-fit viewport to center and fill the crop frame (after state settles)
+      queueMicrotask(() => autoFit(400));
     }
   });
 
   function handleMouseDown(event: MouseEvent | TouchEvent, handle?: string) {
     if (!canvas || !image) return;
+    cancelAnimation();
 
     event.preventDefault();
     event.stopPropagation();
@@ -263,10 +267,9 @@
       isPanning = false;
       haptic('selection');
     } else {
-      // Frame interior drag → pan the underlying image (iOS Photos / Lightroom style).
+      // Drag → pan the underlying image (Lightroom style).
       // The frame stays put on screen; the image moves beneath it.
       isPanning = true;
-      panType = 'frame';
       isDragging = false;
       lastPanPosition = { x: coords.clientX, y: coords.clientY };
     }
@@ -303,14 +306,14 @@
   }
 
   // Container mousedown — frame interior and handles stop propagation in their
-  // own handlers, so this only fires when the user pressed *outside* the frame.
-  // That case = canvas pan (viewport moves, image and frame both follow the finger).
+  // Container mousedown — fires when user pressed outside the frame.
+  // Same behavior as inside: image scrolls under stationary frame (Lightroom style).
   function handleContainerMouseDown(event: MouseEvent) {
     if (event.button !== 0) return;
+    cancelAnimation();
     event.preventDefault();
     event.stopPropagation();
     isPanning = true;
-    panType = 'canvas';
     isResizing = false;
     resizeHandle = null;
     initialCropArea = null;
@@ -323,29 +326,12 @@
 
     const coords = getEventCoords(event);
 
-    // ── Pan — two flavours depending on where the drag started ──
+    // ── Pan — image scrolls under stationary frame (Lightroom style) ──
     if (isPanning) {
       const deltaX = coords.clientX - lastPanPosition.x;
       const deltaY = coords.clientY - lastPanPosition.y;
       event.preventDefault();
 
-      if (panType === 'canvas') {
-        // Drag started outside the frame → move the viewport itself.
-        // Both image and frame translate together (cropArea is untouched).
-        if (onViewportChange) {
-          onViewportChange({
-            offsetX: viewport.offsetX + deltaX,
-            offsetY: viewport.offsetY + deltaY
-          });
-        }
-        lastPanPosition = { x: coords.clientX, y: coords.clientY };
-        return;
-      }
-
-      // panType === 'frame'
-      // Drag inside the frame → image scrolls under a stationary frame.
-      // cropArea moves in image space by the inverse of the finger motion, and
-      // viewport.offset is counter-adjusted so the frame's canvas position stays put.
       const scale = viewport.scale * viewport.zoom;
       const imageDeltaX = deltaX / scale;
       const imageDeltaY = deltaY / scale;
@@ -483,12 +469,91 @@
     }
   }
 
+  // ── Auto-fit: calculate viewport that centers and fills the crop frame ──
+  const AUTO_FIT_PADDING = 0.80; // crop frame fills 80% of canvas
+
+  function calculateAutoFitViewport(
+    crop: CropArea,
+    img: HTMLImageElement,
+    cvs: HTMLCanvasElement,
+    baseScale: number
+  ): { zoom: number; offsetX: number; offsetY: number } {
+    const targetW = cvs.width * AUTO_FIT_PADDING;
+    const targetH = cvs.height * AUTO_FIT_PADDING;
+    const fitZoom = Math.min(targetW / (crop.width * baseScale), targetH / (crop.height * baseScale));
+
+    const totalScale = baseScale * fitZoom;
+    const cropCenterX = crop.x + crop.width / 2;
+    const cropCenterY = crop.y + crop.height / 2;
+    const offsetX = -(cropCenterX - img.width / 2) * totalScale;
+    const offsetY = -(cropCenterY - img.height / 2) * totalScale;
+
+    return { zoom: fitZoom, offsetX, offsetY };
+  }
+
+  // ── Smooth viewport animation (ease-out cubic) ──
+  let animationFrameId: number | null = null;
+
+  function cancelAnimation() {
+    if (animationFrameId !== null) {
+      cancelAnimationFrame(animationFrameId);
+      animationFrameId = null;
+    }
+  }
+
+  function animateViewportTo(
+    target: { zoom: number; offsetX: number; offsetY: number },
+    duration: number = 300
+  ) {
+    cancelAnimation();
+    if (!onViewportChange) return;
+
+    const start = { zoom: viewport.zoom, offsetX: viewport.offsetX, offsetY: viewport.offsetY };
+    const startTime = performance.now();
+
+    function tick(now: number) {
+      const elapsed = now - startTime;
+      const t = Math.min(1, elapsed / duration);
+      const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+
+      onViewportChange!({
+        zoom: start.zoom + (target.zoom - start.zoom) * eased,
+        offsetX: start.offsetX + (target.offsetX - start.offsetX) * eased,
+        offsetY: start.offsetY + (target.offsetY - start.offsetY) * eased
+      });
+
+      if (t < 1) {
+        animationFrameId = requestAnimationFrame(tick);
+      } else {
+        animationFrameId = null;
+      }
+    }
+
+    animationFrameId = requestAnimationFrame(tick);
+  }
+
+  function autoFit(duration: number = 300) {
+    if (!canvas || !image) return;
+    const target = calculateAutoFitViewport(cropArea, image, canvas, viewport.scale);
+    if (duration > 0) {
+      animateViewportTo(target, duration);
+    } else if (onViewportChange) {
+      onViewportChange(target);
+    }
+  }
+
   function handleMouseUp() {
+    const wasResizing = isResizing;
     isDragging = false;
     isResizing = false;
     isPanning = false;
     resizeHandle = null;
     initialCropArea = null;
+
+    // Snap-back: auto-fit after resize to re-center the new crop frame
+    if (wasResizing) {
+      autoFit(300);
+    }
   }
 
   // These will be defined below after pinch zoom handlers are renamed
@@ -525,12 +590,14 @@
       width: newWidth,
       height: newHeight
     };
+    autoFit(300);
   }
 
-  // Wheel zoom — exponential (log-scale feel), cursor-focused.
-  // Normalizes trackpad line-mode / pixel-mode. Shift = coarse step.
+  // Wheel zoom — crop-contextual: changes cropArea size, not viewport.zoom.
+  // Scroll up = zoom in = cropArea shrinks. Cursor-focused.
   function handleWheel(event: WheelEvent) {
     if (!canvas || !image) return;
+    cancelAnimation();
     event.preventDefault();
     event.stopPropagation();
 
@@ -540,12 +607,36 @@
 
     const coarseness = event.shiftKey ? 0.0048 : 0.002;
     const factor = Math.exp(-dy * coarseness);
-    const targetZoom = viewport.zoom * factor;
+    // factor > 1 = scroll up = zoom in = crop shrinks
+    const inverseRatio = 1 / factor;
 
-    const rect = canvas.getBoundingClientRect();
-    const focusX = event.clientX - rect.left;
-    const focusY = event.clientY - rect.top;
-    applyCursorFocusedZoom(targetZoom, focusX, focusY);
+    const minSize = 50;
+    let newWidth = cropArea.width * inverseRatio;
+    let newHeight = cropArea.height * inverseRatio;
+
+    newWidth = Math.max(minSize, Math.min(image.width, newWidth));
+    newHeight = Math.max(minSize, Math.min(image.height, newHeight));
+
+    if (lockedAspectRatio !== null) {
+      if (newWidth / newHeight > lockedAspectRatio) {
+        newWidth = newHeight * lockedAspectRatio;
+      } else {
+        newHeight = newWidth / lockedAspectRatio;
+      }
+    }
+
+    // Re-center around cursor position in image coords
+    const imgCoords = screenToImageCoords(event.clientX, event.clientY, canvas, image, viewport, transform);
+    const relX = Math.max(0, Math.min(1, (imgCoords.x - cropArea.x) / cropArea.width));
+    const relY = Math.max(0, Math.min(1, (imgCoords.y - cropArea.y) / cropArea.height));
+
+    let newX = imgCoords.x - relX * newWidth;
+    let newY = imgCoords.y - relY * newHeight;
+    newX = Math.max(0, Math.min(image.width - newWidth, newX));
+    newY = Math.max(0, Math.min(image.height - newHeight, newY));
+
+    cropArea = { x: newX, y: newY, width: newWidth, height: newHeight };
+    autoFit(0); // instant re-center
   }
 
   // Keyboard shortcuts — Enter / Esc / Arrow keys (1px), Shift+Arrow (10px)
@@ -584,78 +675,80 @@
     }
   }
 
-  // ── Cursor-focused canvas zoom ─────────────────────────────────────────
-  // This is the *standard* zoom: both the image and the frame scale together
-  // (the frame is drawn relative to cropArea in image space, so as viewport.zoom
-  //  changes, the frame naturally follows the image on screen). cropArea is
-  //  NOT modified — the "which part of the image is cropped" selection is
-  //  preserved across zooms, only its visual size on canvas changes.
-  //
-  // Pan (frame-stationary) is still handled separately in handleMouseMove,
-  // where both cropArea and viewport.offset update together.
-  const MIN_ZOOM = 0.25;
-  const MAX_ZOOM = 10;
-
-  function applyCursorFocusedZoom(
-    targetZoom: number,
-    focusCanvasX: number,
-    focusCanvasY: number
-  ): boolean {
-    if (!canvas || !onViewportChange) return false;
-
-    const oldZoom = viewport.zoom;
-    const clampedZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, targetZoom));
-    if (Math.abs(clampedZoom - oldZoom) < 1e-4) return false;
-
-    // Keep the image point under the focus stationary on screen.
-    const cxRel = focusCanvasX - canvas.width / 2;
-    const cyRel = focusCanvasY - canvas.height / 2;
-    const zoomRatio = clampedZoom / oldZoom;
-    const newOffsetX = cxRel - (cxRel - viewport.offsetX) * zoomRatio;
-    const newOffsetY = cyRel - (cyRel - viewport.offsetY) * zoomRatio;
-
-    onViewportChange({
-      zoom: clampedZoom,
-      offsetX: newOffsetX,
-      offsetY: newOffsetY
-    });
-    return true;
-  }
-
   function fitToScreen() {
-    if (!onViewportChange) return;
     haptic('light');
-    onViewportChange({ zoom: 1, offsetX: 0, offsetY: 0 });
+    autoFit(300);
   }
 
   function handlePinchZoomStart(event: TouchEvent) {
-    if (event.touches.length !== 2) return;
+    if (event.touches.length !== 2 || !canvas || !image) return;
+    cancelAnimation();
     event.preventDefault();
     const t1 = event.touches[0];
     const t2 = event.touches[1];
     initialPinchDistance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
-    initialPinchZoom = viewport.zoom;
+    initialPinchCropArea = { ...cropArea };
+
+    // Calculate pinch midpoint's relative position within the crop area
+    const midX = (t1.clientX + t2.clientX) / 2;
+    const midY = (t1.clientY + t2.clientY) / 2;
+    const imgCoords = screenToImageCoords(midX, midY, canvas, image, viewport, transform);
+    initialPinchFocusRel = {
+      x: Math.max(0, Math.min(1, (imgCoords.x - cropArea.x) / cropArea.width)),
+      y: Math.max(0, Math.min(1, (imgCoords.y - cropArea.y) / cropArea.height))
+    };
   }
 
   function handlePinchZoomMove(event: TouchEvent) {
-    if (event.touches.length !== 2 || initialPinchDistance === 0) return;
-    if (!canvas) return;
+    if (event.touches.length !== 2 || initialPinchDistance === 0 || !initialPinchCropArea) return;
+    if (!canvas || !image) return;
     event.preventDefault();
 
     const t1 = event.touches[0];
     const t2 = event.touches[1];
     const distance = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
     const scaleRatio = distance / initialPinchDistance;
-    const targetZoom = initialPinchZoom * scaleRatio;
+    // Pinch out (scaleRatio > 1) = zoom in = crop area shrinks
+    const inverseRatio = 1 / scaleRatio;
 
-    const rect = canvas.getBoundingClientRect();
-    const focusX = (t1.clientX + t2.clientX) / 2 - rect.left;
-    const focusY = (t1.clientY + t2.clientY) / 2 - rect.top;
-    applyCursorFocusedZoom(targetZoom, focusX, focusY);
+    const minSize = 50;
+    let newWidth = initialPinchCropArea.width * inverseRatio;
+    let newHeight = initialPinchCropArea.height * inverseRatio;
+
+    // Enforce minimum size
+    newWidth = Math.max(minSize, Math.min(image.width, newWidth));
+    newHeight = Math.max(minSize, Math.min(image.height, newHeight));
+
+    // If aspect locked, enforce ratio
+    if (lockedAspectRatio !== null) {
+      if (newWidth / newHeight > lockedAspectRatio) {
+        newWidth = newHeight * lockedAspectRatio;
+      } else {
+        newHeight = newWidth / lockedAspectRatio;
+      }
+    }
+
+    // Re-center around the pinch focus point
+    const focusImgX = initialPinchCropArea.x + initialPinchFocusRel.x * initialPinchCropArea.width;
+    const focusImgY = initialPinchCropArea.y + initialPinchFocusRel.y * initialPinchCropArea.height;
+    let newX = focusImgX - initialPinchFocusRel.x * newWidth;
+    let newY = focusImgY - initialPinchFocusRel.y * newHeight;
+
+    // Clamp to image bounds
+    newX = Math.max(0, Math.min(image.width - newWidth, newX));
+    newY = Math.max(0, Math.min(image.height - newHeight, newY));
+
+    cropArea = { x: newX, y: newY, width: newWidth, height: newHeight };
+
+    // Auto-fit viewport to keep frame centered (instant, no animation during pinch)
+    autoFit(0);
   }
 
   function handlePinchZoomEnd() {
     initialPinchDistance = 0;
+    initialPinchCropArea = null;
+    // Smooth snap-back after pinch ends
+    autoFit(300);
   }
 
   // Unified touch handlers — 1 finger pan (frame or canvas based on start position),
@@ -672,13 +765,10 @@
     }
 
     if (event.touches.length === 1) {
-      // Child elements (frame border / handles) stopPropagation in their own
-      // touchstart, so if we reach here the touch is *outside* the frame.
-      // That maps to canvas pan (move viewport, keep cropArea in place).
+      // Outside frame touch — same as inside: image scrolls under frame (Lightroom style).
       event.preventDefault();
       const touch = event.touches[0];
       isPanning = true;
-      panType = 'canvas';
       isResizing = false;
       lastPanPosition = { x: touch.clientX, y: touch.clientY };
     }

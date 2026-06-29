@@ -969,13 +969,16 @@
   $effect(() => {
     if (!annotationCanvasElement || !canvas || !image) return;
 
+    const dpr = window.devicePixelRatio || 1;
     const width = canvas.width;
     const height = canvas.height;
 
-    // Ensure canvas size matches parent
-    if (annotationCanvasElement.width !== width || annotationCanvasElement.height !== height) {
-      annotationCanvasElement.width = width;
-      annotationCanvasElement.height = height;
+    // Ensure canvas is sized at physical pixel resolution for crisp rendering
+    const physicalWidth = Math.round(width * dpr);
+    const physicalHeight = Math.round(height * dpr);
+    if (annotationCanvasElement.width !== physicalWidth || annotationCanvasElement.height !== physicalHeight) {
+      annotationCanvasElement.width = physicalWidth;
+      annotationCanvasElement.height = physicalHeight;
     }
 
     // Only render to canvas when useCanvasRendering is true
@@ -1733,6 +1736,8 @@
   .annotation-preview-canvas {
     position: absolute;
     inset: 0;
+    width: 100%;
+    height: 100%;
     pointer-events: none;
     z-index: 2;
 

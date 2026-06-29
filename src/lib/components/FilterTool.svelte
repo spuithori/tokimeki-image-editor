@@ -1,8 +1,8 @@
 <script lang="ts">
   import { _ } from 'svelte-i18n';
-  import type { AdjustmentsState, CropArea, TransformState, Viewport } from '../types';
+  import type { AdjustmentsState, CropArea, TransformState, Viewport, HSLAdjustment } from '../types';
   import { FILTER_PRESETS, applyFilterPreset, matchesFilterPreset } from '../utils/filters';
-  import { applyGaussianBlur } from '../utils/adjustments';
+  import { applyGaussianBlur, generateCurveLUT, isToneCurveDefault, isHSLDefault } from '../utils/adjustments';
   import ToolPanel from './ToolPanel.svelte';
 
   interface Props {
@@ -60,6 +60,35 @@
     }
   }
 
+  // Lightroom-style HSL per-color blending (matches shader blendHSLAdjustments)
+  function blendHSLAdjustmentsJS(hueDeg: number, hslAdj: HSLAdjustment): [number, number, number] {
+    let h = ((hueDeg % 360) + 360) % 360;
+
+    const r = [hslAdj.red.hue, hslAdj.red.saturation, hslAdj.red.luminance];
+    const o = [hslAdj.orange.hue, hslAdj.orange.saturation, hslAdj.orange.luminance];
+    const y = [hslAdj.yellow.hue, hslAdj.yellow.saturation, hslAdj.yellow.luminance];
+    const g = [hslAdj.green.hue, hslAdj.green.saturation, hslAdj.green.luminance];
+    const a = [hslAdj.aqua.hue, hslAdj.aqua.saturation, hslAdj.aqua.luminance];
+    const b = [hslAdj.blue.hue, hslAdj.blue.saturation, hslAdj.blue.luminance];
+    const p = [hslAdj.purple.hue, hslAdj.purple.saturation, hslAdj.purple.luminance];
+    const m = [hslAdj.magenta.hue, hslAdj.magenta.saturation, hslAdj.magenta.luminance];
+
+    const mix3 = (a: number[], b: number[], t: number): [number, number, number] => [
+      a[0] + (b[0] - a[0]) * t,
+      a[1] + (b[1] - a[1]) * t,
+      a[2] + (b[2] - a[2]) * t,
+    ];
+
+    if (h < 30) return mix3(r, o, h / 30);
+    if (h < 60) return mix3(o, y, (h - 30) / 30);
+    if (h < 120) return mix3(y, g, (h - 60) / 60);
+    if (h < 180) return mix3(g, a, (h - 120) / 60);
+    if (h < 240) return mix3(a, b, (h - 180) / 60);
+    if (h < 270) return mix3(b, p, (h - 240) / 30);
+    if (h < 300) return mix3(p, m, (h - 270) / 30);
+    return mix3(m, r, (h - 300) / 60);
+  }
+
   // Apply adjustments to canvas via pixel manipulation (Safari-compatible)
   // Must match the shader order and calculations EXACTLY
   function applyAdjustmentsToCanvas(
@@ -81,13 +110,25 @@
       adjustments.grayscale === 0 &&
       adjustments.vignette === 0 &&
       adjustments.blur === 0 &&
-      adjustments.grain === 0
+      adjustments.grain === 0 &&
+      (!adjustments.toneCurve || isToneCurveDefault(adjustments.toneCurve)) &&
+      (!adjustments.hsl || isHSLDefault(adjustments.hsl))
     ) {
       return;
     }
 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
+
+    // Tone curve LUT (applied before all other adjustments, matching shader)
+    const hasToneCurve = !!adjustments.toneCurve && !isToneCurveDefault(adjustments.toneCurve);
+    let curveLUT: Uint8Array | null = null;
+    if (hasToneCurve) {
+      curveLUT = generateCurveLUT(adjustments.toneCurve!);
+    }
+
+    // HSL per-color
+    const hasHSL = !!adjustments.hsl && !isHSLDefault(adjustments.hsl);
 
     // Pre-calculate adjustment factors
     const hasBrightness = adjustments.brightness !== 0;
@@ -122,6 +163,16 @@
       let r = data[i] / 255;
       let g = data[i + 1] / 255;
       let b = data[i + 2] / 255;
+
+      // 0. Tone curve (before all adjustments, matching shader)
+      if (hasToneCurve && curveLUT) {
+        const ri = Math.max(0, Math.min(255, Math.round(r * 255)));
+        const gi = Math.max(0, Math.min(255, Math.round(g * 255)));
+        const bi = Math.max(0, Math.min(255, Math.round(b * 255)));
+        r = curveLUT[ri * 4 + 0] / 255;
+        g = curveLUT[gi * 4 + 1] / 255;
+        b = curveLUT[bi * 4 + 2] / 255;
+      }
 
       // 1. Brightness (FIRST, like shader)
       if (hasBrightness) {
@@ -160,6 +211,40 @@
           r = r + r * (adjustments.highlights / 100) * highlightMask * 0.5;
           g = g + g * (adjustments.highlights / 100) * highlightMask * 0.5;
           b = b + b * (adjustments.highlights / 100) * highlightMask * 0.5;
+        }
+      }
+
+      // 4.5. HSL per-color adjustment (Lightroom-style, matching shader)
+      if (hasHSL && adjustments.hsl) {
+        r = Math.max(0, Math.min(1, r));
+        g = Math.max(0, Math.min(1, g));
+        b = Math.max(0, Math.min(1, b));
+
+        // rgbToHsl returns [h: 0-360, s: 0-100, l: 0-100]
+        const [hDeg, sVal, lVal] = rgbToHsl(r * 255, g * 255, b * 255);
+        let hNorm = hDeg / 360;
+        let sNorm = sVal / 100;
+        let lNorm = lVal / 100;
+
+        const adj = blendHSLAdjustmentsJS(hDeg, adjustments.hsl);
+
+        if (adj[0] !== 0 || adj[1] !== 0 || adj[2] !== 0) {
+          // Hue shift (additive, wrapping)
+          hNorm = hNorm + adj[0] / 360;
+          if (hNorm < 0) hNorm += 1;
+          if (hNorm > 1) hNorm -= 1;
+
+          // Saturation (proportional)
+          sNorm = Math.max(0, Math.min(1, sNorm * (1 + adj[1] / 100)));
+
+          // Luminance (weighted additive — stronger in midtones)
+          const lumWeight = 4 * lNorm * (1 - lNorm);
+          lNorm = Math.max(0, Math.min(1, lNorm + (adj[2] / 100) * Math.max(lumWeight, 0.15)));
+
+          [r, g, b] = hslToRgb(hNorm * 360, sNorm * 100, lNorm * 100);
+          r /= 255;
+          g /= 255;
+          b /= 255;
         }
       }
 
@@ -573,7 +658,7 @@
       rgba(0, 0, 0, 0.4) 60%,
       transparent 100%
     );
-    color: var(--tk-text-primary);
+    color: #ffffff;
     padding: var(--tk-space-3) var(--tk-space-2) var(--tk-space-1);
     font-size: var(--tk-text-2xs);
     font-weight: var(--tk-weight-semibold);

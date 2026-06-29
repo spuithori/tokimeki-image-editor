@@ -1292,6 +1292,8 @@ export async function exportWithWebGPU(
   blurAreas: BlurArea[] = []
 ): Promise<HTMLCanvasElement | null> {
   try {
+    const _DEV = import.meta.env.DEV;
+    if (_DEV) console.time('[exportGPU] total');
     if (!navigator.gpu) {
       console.warn('WebGPU not supported for export');
       return null;
@@ -1329,10 +1331,11 @@ export async function exportWithWebGPU(
 
     context.configure({ device, format, alphaMode: 'premultiplied' });
 
-    // Upload image as texture
+    if (_DEV) console.time('[exportGPU] a. createImageBitmap');
     const bitmap = imageSource instanceof ImageBitmap
       ? imageSource
       : await createImageBitmap(imageSource);
+    if (_DEV) console.timeEnd('[exportGPU] a. createImageBitmap');
 
     const texture = device.createTexture({
       size: [bitmap.width, bitmap.height, 1],
@@ -1434,6 +1437,7 @@ export async function exportWithWebGPU(
       ],
     });
 
+    if (_DEV) console.time('[exportGPU] b. render passes');
     // Track which texture holds the current result for the grain/final pass
     let currentResultView = intermediate1.createView();
 
@@ -1685,8 +1689,11 @@ export async function exportWithWebGPU(
     const canvasView = context.getCurrentTexture().createView();
     createRenderPass(finalEncoder, canvasView, grainPipeline, grainBindGroup);
     device.queue.submit([finalEncoder.finish()]);
+    if (_DEV) console.timeEnd('[exportGPU] b. render passes');
 
+    if (_DEV) console.time('[exportGPU] c. onSubmittedWorkDone');
     await device.queue.onSubmittedWorkDone();
+    if (_DEV) console.timeEnd('[exportGPU] c. onSubmittedWorkDone');
 
     // Cleanup per-export resources (pipelines/sampler are cached)
     texture.destroy();
@@ -1700,6 +1707,7 @@ export async function exportWithWebGPU(
     sharpenUniformBuffer.destroy();
     denoiseUniformBuffer.destroy();
     curveLUTTexture.destroy();
+    if (_DEV) console.timeEnd('[exportGPU] total');
 
     return canvas;
   } catch (error) {

@@ -331,23 +331,15 @@ export async function applyTransformWithWebGPU(
       if (webgpuCanvas) {
         // Apply stamps and annotations on top (WebGPU doesn't handle these yet)
         if (stampAreas.length > 0 || annotations.length > 0) {
-          // Create a new Canvas2D to composite WebGPU result + stamps + annotations
           const finalCanvas = document.createElement('canvas');
           finalCanvas.width = webgpuCanvas.width;
           finalCanvas.height = webgpuCanvas.height;
           const ctx = finalCanvas.getContext('2d');
 
           if (ctx) {
-            // Draw WebGPU result
             ctx.drawImage(webgpuCanvas, 0, 0);
 
-            // Apply stamps on top
-            const exportViewport: Viewport = {
-              zoom: 1,
-              offsetX: 0,
-              offsetY: 0,
-              scale: 1
-            };
+            const exportViewport: Viewport = { zoom: 1, offsetX: 0, offsetY: 0, scale: 1 };
             if (annotations.length > 0) {
               applyAnnotations(finalCanvas, img, exportViewport, annotations, cropArea);
             }
