@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import type { Annotation, AnnotationType, AnnotationPoint, Viewport, TransformState, CropArea, StampArea } from '../types';
   import { screenToImageCoords, getOrCreateFillCanvas, applyStamps } from '../utils/canvas';
   import {

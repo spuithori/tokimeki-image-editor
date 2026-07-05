@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import type { HSLAdjustment, HSLColorName, HSLRange } from '../types';
   import Slider from './Slider.svelte';
   import { haptic } from '../utils/haptics';
@@ -13,15 +13,15 @@
 
   let activeColor = $state<HSLColorName>('red');
 
-  const COLOR_MAP: { name: HSLColorName; hex: string }[] = [
-    { name: 'red', hex: '#FF3B30' },
-    { name: 'orange', hex: '#FF9500' },
-    { name: 'yellow', hex: '#FFCC00' },
-    { name: 'green', hex: '#34C759' },
-    { name: 'aqua', hex: '#5AC8FA' },
-    { name: 'blue', hex: '#007AFF' },
-    { name: 'purple', hex: '#AF52DE' },
-    { name: 'magenta', hex: '#FF2D55' }
+  const COLOR_MAP: { name: HSLColorName; hex: string; labelKey: string }[] = [
+    { name: 'red', hex: '#FF3B30', labelKey: 'adjustments.hslRed' },
+    { name: 'orange', hex: '#FF9500', labelKey: 'adjustments.hslOrange' },
+    { name: 'yellow', hex: '#FFCC00', labelKey: 'adjustments.hslYellow' },
+    { name: 'green', hex: '#34C759', labelKey: 'adjustments.hslGreen' },
+    { name: 'aqua', hex: '#5AC8FA', labelKey: 'adjustments.hslAqua' },
+    { name: 'blue', hex: '#007AFF', labelKey: 'adjustments.hslBlue' },
+    { name: 'purple', hex: '#AF52DE', labelKey: 'adjustments.hslPurple' },
+    { name: 'magenta', hex: '#FF2D55', labelKey: 'adjustments.hslMagenta' }
   ];
 
   let activeRange = $derived<HSLRange>(hsl[activeColor]);
@@ -46,12 +46,12 @@
 </script>
 
 <div class="hsl-tool">
-  <div class="color-selector" role="radiogroup" aria-label={$_('adjustments.hsl.colors')}>
+  <div class="color-selector" role="radiogroup" aria-label={$_('adjustments.hslColors')}>
     {#each COLOR_MAP as color (color.name)}
       <button
         role="radio"
         aria-checked={activeColor === color.name}
-        aria-label={$_(`adjustments.hsl.${color.name}`)}
+        aria-label={$_(color.labelKey)}
         class="color-dot"
         class:active={activeColor === color.name}
         style:--dot-color={color.hex}
@@ -64,7 +64,7 @@
 
   <div class="slider-list">
     <Slider
-      label={$_('adjustments.hsl.hue')}
+      label={$_('adjustments.hue')}
       value={activeRange.hue}
       min={-180}
       max={180}
@@ -73,7 +73,7 @@
       onInput={(v) => handleSliderChange('hue', v)}
     />
     <Slider
-      label={$_('adjustments.hsl.saturation')}
+      label={$_('adjustments.saturation')}
       value={activeRange.saturation}
       min={-100}
       max={100}
@@ -81,7 +81,7 @@
       onInput={(v) => handleSliderChange('saturation', v)}
     />
     <Slider
-      label={$_('adjustments.hsl.luminance')}
+      label={$_('adjustments.luminance')}
       value={activeRange.luminance}
       min={-100}
       max={100}

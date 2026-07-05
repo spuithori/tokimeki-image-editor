@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import type { StampArea, Viewport, TransformState, CropArea, StampAsset } from '../types';
   import { STAMP_ASSETS } from '../config/stamps';
   import { preloadStampImage } from '../utils/canvas';

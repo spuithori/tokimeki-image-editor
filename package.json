@@ -1,6 +1,6 @@
 {
   "name": "tokimeki-image-editor",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A image editor for svelte.",
   "type": "module",
   "license": "MIT",
@@ -21,18 +21,19 @@
     }
   },
   "peerDependencies": {
-    "svelte": "^5.55.2"
+    "svelte": "^5.55.2",
+    "tokimeki-i18n": "^0.2.0"
   },
   "dependencies": {
     "@lucide/svelte": "^1.22.0",
     "@sveltejs/adapter-auto": "^7.0.1",
     "rbush": "^4.0.1",
     "runed": "^0.35.1",
-    "svelte-i18n": "^4.0.1",
     "vite-plugin-top-level-await": "^1.6.0",
     "vite-plugin-wasm": "^3.6.0"
   },
   "devDependencies": {
+    "tokimeki-i18n": "^0.2.0",
     "@sveltejs/kit": "^2.57.0",
     "@sveltejs/package": "^2.5.7",
     "@sveltejs/vite-plugin-svelte": "^6.2.4",

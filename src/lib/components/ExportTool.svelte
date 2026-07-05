@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import Download from '@lucide/svelte/icons/download';
   import FileImage from '@lucide/svelte/icons/file-image';
   import ImageDown from '@lucide/svelte/icons/image-down';

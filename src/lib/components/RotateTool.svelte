@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import RotateCw from '@lucide/svelte/icons/rotate-cw';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
   import FlipHorizontal from '@lucide/svelte/icons/flip-horizontal';

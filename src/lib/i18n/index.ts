@@ -1,12 +1,10 @@
-import { addMessages, init, getLocaleFromNavigator } from 'svelte-i18n';
+import { addLocales, getLocale, setLocale } from 'tokimeki-i18n';
 
 import en from './locales/en.json';
 import ja from './locales/ja.json';
 
-addMessages('en', en);
-addMessages('ja', ja);
+addLocales({ en: [en], ja: [ja] });
 
-init({
-  fallbackLocale: 'en',
-  initialLocale: getLocaleFromNavigator(),
-});
+if (!getLocale()) {
+  setLocale(typeof navigator !== 'undefined' ? navigator.language : 'en');
+}
