@@ -6,6 +6,13 @@ import { GRAIN_SHADER_CODE } from '../shaders/grain';
 import { SHARPEN_SHADER_CODE } from '../shaders/sharpen';
 import { DENOISE_SHADER_CODE } from '../shaders/denoise';
 import { generateCurveLUT } from './adjustments';
+import {
+  IOS_MAX_CANVAS_AREA,
+  alignedBytesPerRow,
+  computeExportDimensions,
+  isIOSLike,
+  unpadRows,
+} from './export-limits';
 
 const SHADER_CODE = IMAGE_EDITOR_SHADER_CODE;
 
@@ -136,7 +143,9 @@ export async function initWebGPUCanvas(canvas: HTMLCanvasElement): Promise<boole
       return false;
     }
 
-    gpuDevice = await adapter.requestDevice();
+    gpuDevice = await adapter.requestDevice({
+      requiredLimits: { maxTextureDimension2D: adapter.limits.maxTextureDimension2D },
+    });
 
     // Get WebGPU context
     gpuContext = canvas.getContext('webgpu') as GPUCanvasContext;
@@ -1249,7 +1258,6 @@ function getExportPipelines(device: GPUDevice): typeof exportPipelineCache {
     return exportPipelineCache;
   }
 
-  const format = navigator.gpu.getPreferredCanvasFormat();
   const rgba8Targets = [{ format: 'rgba8unorm' as GPUTextureFormat }];
   const opts = { primitive: { topology: 'triangle-list' as GPUPrimitiveTopology }, layout: 'auto' as const };
 
@@ -1266,7 +1274,7 @@ function getExportPipelines(device: GPUDevice): typeof exportPipelineCache {
     device,
     mainPipeline: mkPipeline(SHADER_CODE),
     blurPipeline: mkPipeline(BLUR_SHADER_CODE),
-    grainPipeline: mkPipeline(GRAIN_SHADER_CODE, [{ format }]),
+    grainPipeline: mkPipeline(GRAIN_SHADER_CODE),
     sharpenPipeline: mkPipeline(SHARPEN_SHADER_CODE),
     denoisePipeline: mkPipeline(DENOISE_SHADER_CODE),
     compositePipeline: mkPipeline(COMPOSITE_SHADER_CODE),
@@ -1291,6 +1299,7 @@ export async function exportWithWebGPU(
   cropArea: CropArea | null = null,
   blurAreas: BlurArea[] = []
 ): Promise<HTMLCanvasElement | null> {
+  let ownedDevice: GPUDevice | null = null;
   try {
     const _DEV = import.meta.env.DEV;
     if (_DEV) console.time('[exportGPU] total');
@@ -1301,15 +1310,21 @@ export async function exportWithWebGPU(
 
     // Reuse global device if available, otherwise create new one
     let device = gpuDevice;
-    let deviceIsOwned = false;
     if (!device) {
       const adapter = await navigator.gpu.requestAdapter();
       if (!adapter) return null;
-      device = await adapter.requestDevice();
-      deviceIsOwned = true;
+      device = await adapter.requestDevice({
+        requiredLimits: { maxTextureDimension2D: adapter.limits.maxTextureDimension2D },
+      });
+      ownedDevice = device;
     }
 
-    const format = navigator.gpu.getPreferredCanvasFormat();
+    const maxTextureDim = device.limits.maxTextureDimension2D;
+    if (imageSource.width > maxTextureDim || imageSource.height > maxTextureDim) {
+      console.warn('Image exceeds WebGPU texture limit, falling back to Canvas2D');
+      if (ownedDevice) { ownedDevice.destroy(); ownedDevice = null; }
+      return null;
+    }
 
     // Calculate output dimensions based on crop and rotation
     const sourceWidth = cropArea ? cropArea.width : imageSource.width;
@@ -1318,18 +1333,16 @@ export async function exportWithWebGPU(
     const outputWidth = needsSwap ? sourceHeight : sourceWidth;
     const outputHeight = needsSwap ? sourceWidth : sourceHeight;
 
-    // Create offscreen canvas at full resolution
-    const canvas = document.createElement('canvas');
-    canvas.width = outputWidth;
-    canvas.height = outputHeight;
-
-    const context = canvas.getContext('webgpu') as GPUCanvasContext;
-    if (!context) {
-      console.warn('Failed to get WebGPU context for export');
-      return null;
-    }
-
-    context.configure({ device, format, alphaMode: 'premultiplied' });
+    // Clamp the export size to what the device and (on iOS) the 2D canvas
+    // readback path can actually hold — oversized exports silently go black.
+    const { width: scaledWidth, height: scaledHeight, renderScale } = computeExportDimensions(
+      outputWidth,
+      outputHeight,
+      {
+        maxDimension: maxTextureDim,
+        maxArea: isIOSLike() ? IOS_MAX_CANVAS_AREA : Infinity,
+      }
+    );
 
     if (_DEV) console.time('[exportGPU] a. createImageBitmap');
     const bitmap = imageSource instanceof ImageBitmap
@@ -1372,7 +1385,7 @@ export async function exportWithWebGPU(
 
     // Lazy texture allocation — only create what's needed
     const mkTex = () => device.createTexture({
-      size: [outputWidth, outputHeight, 1], format: 'rgba8unorm',
+      size: [scaledWidth, scaledHeight, 1], format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
     });
     const intermediate1 = mkTex();
@@ -1385,7 +1398,7 @@ export async function exportWithWebGPU(
       zoom: 1.0,
       offsetX: 0,
       offsetY: 0,
-      scale: 1.0,
+      scale: renderScale,
     };
 
     // Prepare uniforms (grain=0 for main pass, include HSL)
@@ -1405,7 +1418,7 @@ export async function exportWithWebGPU(
       transform.flipVertical ? -1.0 : 1.0,
       transform.scale,
       // Canvas dimensions (2 floats)
-      outputWidth, outputHeight,
+      scaledWidth, scaledHeight,
       // Image dimensions (2 floats)
       bitmap.width, bitmap.height,
       // Crop area (4 floats) — ends at index 26
@@ -1582,8 +1595,8 @@ export async function exportWithWebGPU(
       const compositeUniformBuffer = device.createBuffer({ size: 16, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
       const totalScale = viewport.scale * viewport.zoom * transform.scale;
-      const centerX = outputWidth / 2;
-      const centerY = outputHeight / 2;
+      const centerX = scaledWidth / 2;
+      const centerY = scaledHeight / 2;
       const srcW = cropArea ? cropArea.width : bitmap.width;
       const srcH = cropArea ? cropArea.height : bitmap.height;
       const cropOffX = cropArea ? cropArea.x : 0;
@@ -1600,10 +1613,10 @@ export async function exportWithWebGPU(
         const cbY = (relY - srcH / 2) * totalScale + centerY + viewport.offsetY;
         const cbW = blurArea.width * totalScale;
         const cbH = blurArea.height * totalScale;
-        const minX = clamp(cbX / outputWidth, 0, 1);
-        const minY = clamp(cbY / outputHeight, 0, 1);
-        const maxX = clamp((cbX + cbW) / outputWidth, 0, 1);
-        const maxY = clamp((cbY + cbH) / outputHeight, 0, 1);
+        const minX = clamp(cbX / scaledWidth, 0, 1);
+        const minY = clamp(cbY / scaledHeight, 0, 1);
+        const maxX = clamp((cbX + cbW) / scaledWidth, 0, 1);
+        const maxY = clamp((cbY + cbH) / scaledHeight, 0, 1);
 
         // Each pass needs its own submit so writeBuffer values are consumed correctly
 
@@ -1660,7 +1673,7 @@ export async function exportWithWebGPU(
       compositeUniformBuffer.destroy();
     }
 
-    // Pass 4: Grain / final pass → canvas
+    // Pass 4: Grain / final pass → output texture
     const grainUniforms = new Float32Array([
       adjustments.grain,
       viewport.zoom, viewport.offsetX, viewport.offsetY, viewport.scale,
@@ -1668,7 +1681,7 @@ export async function exportWithWebGPU(
       transform.flipHorizontal ? -1.0 : 1.0,
       transform.flipVertical ? -1.0 : 1.0,
       transform.scale,
-      outputWidth, outputHeight,
+      scaledWidth, scaledHeight,
       bitmap.width, bitmap.height,
       cropArea?.x ?? 0, cropArea?.y ?? 0,
       cropArea?.width ?? 0, cropArea?.height ?? 0,
@@ -1685,15 +1698,45 @@ export async function exportWithWebGPU(
       ],
     });
 
+    // Render the final pass into a plain texture and copy it back through a
+    // mapped buffer. Reading a WebGPU-context canvas via drawImage/getImageData
+    // comes back black on iOS Safari, so no canvas is involved on the GPU side.
+    const outputTexture = device.createTexture({
+      size: [scaledWidth, scaledHeight, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    const bytesPerRow = alignedBytesPerRow(scaledWidth);
+    const readBuffer = device.createBuffer({
+      size: bytesPerRow * scaledHeight,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+
     const finalEncoder = device.createCommandEncoder();
-    const canvasView = context.getCurrentTexture().createView();
-    createRenderPass(finalEncoder, canvasView, grainPipeline, grainBindGroup);
+    createRenderPass(finalEncoder, outputTexture.createView(), grainPipeline, grainBindGroup);
+    finalEncoder.copyTextureToBuffer(
+      { texture: outputTexture },
+      { buffer: readBuffer, bytesPerRow, rowsPerImage: scaledHeight },
+      [scaledWidth, scaledHeight, 1]
+    );
     device.queue.submit([finalEncoder.finish()]);
     if (_DEV) console.timeEnd('[exportGPU] b. render passes');
 
-    if (_DEV) console.time('[exportGPU] c. onSubmittedWorkDone');
-    await device.queue.onSubmittedWorkDone();
-    if (_DEV) console.timeEnd('[exportGPU] c. onSubmittedWorkDone');
+    if (_DEV) console.time('[exportGPU] c. readback');
+    await readBuffer.mapAsync(GPUMapMode.READ);
+    const pixels = unpadRows(
+      new Uint8Array(readBuffer.getMappedRange()),
+      scaledWidth,
+      scaledHeight,
+      bytesPerRow
+    );
+    readBuffer.unmap();
+
+    const outCanvas = document.createElement('canvas');
+    outCanvas.width = scaledWidth;
+    outCanvas.height = scaledHeight;
+    outCanvas.getContext('2d')!.putImageData(new ImageData(pixels, scaledWidth, scaledHeight), 0, 0);
+    if (_DEV) console.timeEnd('[exportGPU] c. readback');
 
     // Cleanup per-export resources (pipelines/sampler are cached)
     texture.destroy();
@@ -1701,17 +1744,24 @@ export async function exportWithWebGPU(
     intermediate2?.destroy();
     intermediate3?.destroy();
     intermediate4?.destroy();
+    outputTexture.destroy();
+    readBuffer.destroy();
     mainUniformBuffer.destroy();
     blurUniformBuffer.destroy();
     grainUniformBuffer.destroy();
     sharpenUniformBuffer.destroy();
     denoiseUniformBuffer.destroy();
     curveLUTTexture.destroy();
+    if (ownedDevice) {
+      ownedDevice.destroy();
+      ownedDevice = null;
+    }
     if (_DEV) console.timeEnd('[exportGPU] total');
 
-    return canvas;
+    return outCanvas;
   } catch (error) {
     console.error('Failed to export with WebGPU:', error);
+    ownedDevice?.destroy();
     return null;
   }
 }

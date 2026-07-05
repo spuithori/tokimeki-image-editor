@@ -1,5 +1,6 @@
 import type { CropArea, TransformState, ExportOptions, Viewport, AdjustmentsState, BlurArea, StampArea, Annotation, AnnotationPoint } from '../types';
 import { applyAllAdjustments, applyGaussianBlur } from './adjustments';
+import { IOS_MAX_CANVAS_AREA, computeExportDimensions, isIOSLike } from './export-limits';
 
 // Image cache for stamp images
 const stampImageCache = new Map<string, HTMLImageElement>();
@@ -239,10 +240,16 @@ export async function applyTransform(
   const sourceWidth = cropArea ? cropArea.width : img.width;
   const sourceHeight = cropArea ? cropArea.height : img.height;
 
-  // Calculate canvas size based on rotation
+  // Calculate canvas size based on rotation, clamped on iOS where canvases
+  // above the WebKit area limit silently read back as black.
   const needsSwap = transform.rotation === 90 || transform.rotation === 270;
-  canvas.width = needsSwap ? sourceHeight : sourceWidth;
-  canvas.height = needsSwap ? sourceWidth : sourceHeight;
+  const { width: outWidth, height: outHeight, renderScale } = computeExportDimensions(
+    needsSwap ? sourceHeight : sourceWidth,
+    needsSwap ? sourceWidth : sourceHeight,
+    { maxArea: isIOSLike() ? IOS_MAX_CANVAS_AREA : Infinity }
+  );
+  canvas.width = outWidth;
+  canvas.height = outHeight;
 
   // Ensure filter is reset before starting
   ctx.filter = 'none';
@@ -250,6 +257,7 @@ export async function applyTransform(
   ctx.save();
 
   ctx.translate(canvas.width / 2, canvas.height / 2);
+  ctx.scale(renderScale, renderScale);
   ctx.rotate((transform.rotation * Math.PI) / 180);
   ctx.scale(
     transform.flipHorizontal ? -1 : 1,
@@ -281,7 +289,7 @@ export async function applyTransform(
     zoom: 1,
     offsetX: 0,
     offsetY: 0,
-    scale: 1
+    scale: renderScale
   };
   await applyAllAdjustments(canvas, img, exportViewport, adjustments, cropArea);
 
@@ -339,7 +347,11 @@ export async function applyTransformWithWebGPU(
           if (ctx) {
             ctx.drawImage(webgpuCanvas, 0, 0);
 
-            const exportViewport: Viewport = { zoom: 1, offsetX: 0, offsetY: 0, scale: 1 };
+            const needsSwap = transform.rotation === 90 || transform.rotation === 270;
+            const baseWidth = cropArea ? cropArea.width : img.width;
+            const baseHeight = cropArea ? cropArea.height : img.height;
+            const scale = webgpuCanvas.width / (needsSwap ? baseHeight : baseWidth);
+            const exportViewport: Viewport = { zoom: 1, offsetX: 0, offsetY: 0, scale };
             if (annotations.length > 0) {
               applyAnnotations(finalCanvas, img, exportViewport, annotations, cropArea);
             }
