@@ -1,7 +1,7 @@
 <script lang="ts">
   import '$lib/i18n';
   import '../styles/tokens.css';
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import Redo2 from '@lucide/svelte/icons/redo-2';
   import Undo2 from '@lucide/svelte/icons/undo-2';
   import RotateCcw from '@lucide/svelte/icons/rotate-ccw';

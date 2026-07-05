@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import Sun from '@lucide/svelte/icons/sun';
   import Contrast from '@lucide/svelte/icons/contrast';
   import Cloud from '@lucide/svelte/icons/cloud';

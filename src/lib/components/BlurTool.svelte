@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import X from '@lucide/svelte/icons/x';
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import Droplet from '@lucide/svelte/icons/droplet';

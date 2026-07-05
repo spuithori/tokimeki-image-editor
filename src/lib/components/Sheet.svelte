@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import X from '@lucide/svelte/icons/x';
   import type { Snippet } from 'svelte';
   import IconButton from './IconButton.svelte';

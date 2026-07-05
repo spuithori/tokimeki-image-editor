@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import type { AdjustmentsState, CropArea, TransformState, Viewport, HSLAdjustment } from '../types';
   import { FILTER_PRESETS, applyFilterPreset, matchesFilterPreset } from '../utils/filters';
   import { applyGaussianBlur, generateCurveLUT, isToneCurveDefault, isHSLDefault } from '../utils/adjustments';

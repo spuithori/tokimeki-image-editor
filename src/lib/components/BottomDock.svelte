@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { _ } from 'svelte-i18n';
+  import { _ } from 'tokimeki-i18n';
   import Crop from '@lucide/svelte/icons/crop';
   import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
   import Sparkles from '@lucide/svelte/icons/sparkles';
