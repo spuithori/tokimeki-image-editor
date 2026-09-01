@@ -10,15 +10,18 @@
   import Sparkles from '@lucide/svelte/icons/sparkles';
   import Download from '@lucide/svelte/icons/download';
   import LoaderCircle from '@lucide/svelte/icons/loader-circle';
+  import { onDestroy } from 'svelte';
   import type {
     EditorMode,
     EditorState,
     CropArea,
+    CropOptions,
     TransformState,
     Viewport,
     AdjustmentsState,
     BlurArea,
     StampArea,
+    StampAsset,
     Annotation,
     Theme
   } from '../types';
@@ -73,6 +76,12 @@
     height?: number;
     isStandalone?: boolean;
     theme?: Theme;
+    /**
+     * Crop behavior overrides for embedding hosts (avatar / banner cropping).
+     * With cropOnly, the editor opens directly in the crop tool, hides all other
+     * tools, and applying the crop immediately completes via onComplete.
+     */
+    cropOptions?: CropOptions;
     onComplete?: (dataUrl: string, blobObj: { blob: Blob; width: number; height: number }) => void;
     onCancel?: () => void;
     onExport?: (dataUrl: string) => void;
@@ -88,10 +97,13 @@
     height = 600,
     isStandalone = false,
     theme = 'dark',
+    cropOptions,
     onComplete,
     onCancel,
     onExport
   }: Props = $props();
+
+  let cropOnly = $derived(cropOptions?.cropOnly === true);
 
   let prefersDark = $state(true);
 
@@ -125,7 +137,7 @@
       if (typeof initialImage === 'string') {
         loadImageFromUrl(initialImage, width, height)
           .then((result) => {
-            state = { ...state, ...applyImageToState(result, initialMode) };
+            state = { ...state, ...applyImageToState(result, cropOnly ? 'crop' : initialMode) };
             state = coreSaveToHistory(state);
           })
           .catch((error) => console.error('Failed to load initial image:', error));
@@ -171,7 +183,7 @@
   async function handleFileUpload(file: File) {
     try {
       const result = await loadImageFromFile(file, width, height);
-      state = { ...state, ...applyImageToState(result, initialMode) };
+      state = { ...state, ...applyImageToState(result, cropOnly ? 'crop' : initialMode) };
       state = coreSaveToHistory(state);
       haptic('success');
     } catch (error) {
@@ -214,11 +226,13 @@
     }
   }
 
-  function handleCropApply(cropArea: CropArea) {
+  async function handleCropApply(cropArea: CropArea) {
     if (!canvasElement || !state.imageData.original) return;
     state = applyCrop(state, cropArea, stageWidth || width, stageHeight || height);
     state = coreSaveToHistory(state);
     haptic('success');
+    // Crop-only mode: applying the crop is the whole flow — export and hand back
+    if (cropOnly) await handleComplete();
   }
 
   function handleTransformChange(transform: Partial<TransformState>) {
@@ -258,6 +272,21 @@
     state = setBlurAreas(state, blurAreas);
     state = coreSaveToHistory(state);
   }
+
+  // Stamps the user added from their own image files (palette entries, not part of history)
+  let userStampAssets = $state<StampAsset[]>([]);
+
+  function handleAddStampAsset(asset: StampAsset) {
+    userStampAssets = [...userStampAssets, asset];
+  }
+
+  onDestroy(() => {
+    for (const asset of userStampAssets) {
+      if (asset.content.startsWith('blob:')) {
+        URL.revokeObjectURL(asset.content);
+      }
+    }
+  });
 
   function handleStampAreasChange(stampAreas: StampArea[]) {
     state = setStampAreas(state, stampAreas);
@@ -344,7 +373,8 @@
 <svelte:window onkeydown={handleKeyDown} />
 
 <div class="tokimeki-editor editor" class:standalone={isStandalone} class:embedded={!isStandalone} data-theme={resolvedTheme}>
-  <!-- Topbar — actions & history -->
+  <!-- Topbar — actions & history (hidden in crop-only mode: CropTool owns ✓/✕) -->
+  {#if !cropOnly}
   <header class="topbar">
     <div class="topbar-left">
       {#if !isStandalone && hasImage}
@@ -416,6 +446,7 @@
       {/if}
     </div>
   </header>
+  {/if}
 
   <!-- Stage — image canvas -->
   <main
@@ -495,8 +526,10 @@
             viewport={state.viewport}
             transform={state.transform}
             seedCropArea={state.cropArea}
+            fixedAspectRatio={cropOptions?.aspectRatio ?? null}
+            circularGuide={cropOptions?.circularGuide ?? false}
             onApply={handleCropApply}
-            onCancel={() => handleModeChange(null)}
+            onCancel={() => (cropOnly ? handleCancel() : handleModeChange(null))}
             onViewportChange={handleViewportChange}
             onTransformChange={handleTransformChange}
           />
@@ -520,7 +553,9 @@
             transform={state.transform}
             stampAreas={state.stampAreas}
             cropArea={state.cropArea}
+            {userStampAssets}
             onUpdate={handleStampAreasChange}
+            onAddStampAsset={handleAddStampAsset}
             onClose={() => (state.mode = null)}
             onViewportChange={handleViewportChange}
           />
@@ -571,8 +606,8 @@
     {/if}
   </main>
 
-  <!-- Bottom dock — primary tool nav -->
-  {#if hasImage}
+  <!-- Bottom dock — primary tool nav (hidden in crop-only mode) -->
+  {#if hasImage && !cropOnly}
     <div class="dock-host" class:hide-mobile={state.mode === 'crop' || state.mode === 'blur' || state.mode === 'stamp' || state.mode === 'annotate'}>
       <BottomDock
         mode={state.mode}
@@ -580,6 +615,13 @@
         isStandalone={isStandalone}
         onModeChange={handleModeChange}
       />
+    </div>
+  {/if}
+
+  <!-- Crop-only mode: brief overlay while the cropped result is exported -->
+  {#if cropOnly && isApplying}
+    <div class="applying-overlay" aria-live="polite">
+      <LoaderCircle size={28} class="spin" />
     </div>
   {/if}
 </div>
@@ -726,8 +768,19 @@
     opacity: 0.6;
     pointer-events: none;
   }
-  .primary-link :global(.spin) {
+  .primary-link :global(.spin),
+  .applying-overlay :global(.spin) {
     animation: spin 1s linear infinite;
+  }
+
+  .applying-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: var(--tk-z-overlay);
+    display: grid;
+    place-items: center;
+    background: var(--tk-overlay-dim);
+    color: var(--tk-text-primary);
   }
   @keyframes spin {
     from { transform: rotate(0deg); }

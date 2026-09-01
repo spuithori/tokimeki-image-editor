@@ -49,6 +49,18 @@ export interface CropArea {
   height: number;
 }
 
+/**
+ * Crop behavior overrides for embedding hosts (e.g. avatar / banner cropping).
+ */
+export interface CropOptions {
+  /** Fixed aspect ratio (width / height, e.g. 1 for avatars, 3 for banners). Locks the frame ratio and hides ratio controls. */
+  aspectRatio?: number;
+  /** Overlay a circular guide inside the crop frame (avatar preview). Output stays rectangular. */
+  circularGuide?: boolean;
+  /** Crop-only mode: open directly in the crop tool, hide all other tools, and complete immediately with the cropped result via onComplete. */
+  cropOnly?: boolean;
+}
+
 export interface BlurArea {
   id: string;
   x: number;

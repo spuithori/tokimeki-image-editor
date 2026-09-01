@@ -8,6 +8,7 @@ export type {
   EditorMode,
   ImageData,
   CropArea,
+  CropOptions,
   TransformState,
   ExportOptions,
   EditorState,

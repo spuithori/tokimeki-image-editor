@@ -3,11 +3,13 @@
   import Pencil from '@lucide/svelte/icons/pencil';
   import ImageIcon from '@lucide/svelte/icons/image';
   import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+  import CircleUserRound from '@lucide/svelte/icons/circle-user-round';
   import Sun from '@lucide/svelte/icons/sun';
   import Moon from '@lucide/svelte/icons/moon';
   import Monitor from '@lucide/svelte/icons/monitor';
 
   let showEditor = $state(false);
+  let avatarMode = $state(false);
   let theme = $state<Theme>('dark');
   let selectedFile = $state<File | null>(null);
   let editedImageUrl = $state<string | null>(null);
@@ -23,6 +25,14 @@
 
   function handleEdit() {
     if (selectedFile || editedImageUrl) {
+      avatarMode = false;
+      showEditor = true;
+    }
+  }
+
+  function handleAvatarCrop() {
+    if (selectedFile || editedImageUrl) {
+      avatarMode = true;
       showEditor = true;
     }
   }
@@ -109,6 +119,10 @@
               <Pencil size={16} strokeWidth={2.4} />
               Edit Image
             </button>
+            <button class="btn btn-secondary" onclick={handleAvatarCrop}>
+              <CircleUserRound size={16} strokeWidth={2.4} />
+              Avatar crop
+            </button>
             <button class="btn btn-secondary" onclick={openFileDialog}>
               <RefreshCw size={16} strokeWidth={2.4} />
               Choose another
@@ -138,11 +152,12 @@
   <div class="editor-overlay">
     <div class="editor-frame">
       <ImageEditor
-        initialImage={imageToEdit}
+        initialImage={imageToEdit ?? undefined}
         width={1200}
         height={700}
         isStandalone={false}
         {theme}
+        cropOptions={avatarMode ? { aspectRatio: 1, circularGuide: true, cropOnly: true } : undefined}
         onComplete={handleComplete}
         onCancel={handleCancel}
       />

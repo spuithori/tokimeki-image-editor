@@ -29,6 +29,7 @@
   "editor.undo": "Undo",
   "editor.redo": "Redo",
   "editor.selectStamp": "Select Stamp",
+  "editor.addStampImage": "Add Image",
   "editor.acceptedFormats": "PNG · JPEG · WebP",
   "editor.doubleTapHint": "Double-tap to zoom · pinch to scale",
   "editor.openImage": "Open image",

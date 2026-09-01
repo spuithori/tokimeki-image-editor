@@ -8,6 +8,7 @@
   import Trash2 from '@lucide/svelte/icons/trash-2';
   import X from '@lucide/svelte/icons/x';
   import Sticker from '@lucide/svelte/icons/sticker';
+  import ImagePlus from '@lucide/svelte/icons/image-plus';
   import FloatingRail from './FloatingRail.svelte';
   import RailButton from './RailButton.svelte';
   import Popover from './Popover.svelte';
@@ -27,12 +28,16 @@
     transform: TransformState;
     stampAreas: StampArea[];
     cropArea?: CropArea | null;
+    userStampAssets?: StampAsset[];
     onUpdate: (stampAreas: StampArea[]) => void;
+    onAddStampAsset?: (asset: StampAsset) => void;
     onClose: () => void;
     onViewportChange?: (viewport: Partial<Viewport>) => void;
   }
 
-  let { canvas, image, viewport, transform, stampAreas, cropArea, onUpdate, onClose, onViewportChange }: Props = $props();
+  let { canvas, image, viewport, transform, stampAreas, cropArea, userStampAssets = [], onUpdate, onAddStampAsset, onClose, onViewportChange }: Props = $props();
+
+  let paletteAssets = $derived([...userStampAssets, ...STAMP_ASSETS]);
 
   let overlayElement = $state<HTMLDivElement | null>(null);
 
@@ -65,6 +70,9 @@
 
   // Default stamp size as percentage of the smaller dimension of the image
   const DEFAULT_STAMP_SIZE_PERCENT = 0.1; // 10%
+
+  // Corner handles used for resizing (se is the rotation handle)
+  const RESIZE_HANDLE_KEYS = ['nw', 'ne', 'sw'] as const;
 
   let selectedStampAsset = $state<StampAsset | null>(null);
   let selectedStampId = $state<string | null>(null);
@@ -381,6 +389,45 @@
     return Math.abs(localX) <= canvasWidth / 2 && Math.abs(localY) <= canvasHeight / 2;
   }
 
+  // User-provided stamp images
+  const STAMP_FILE_ACCEPT = 'image/png,image/jpeg,image/jpg,image/webp,image/gif,image/svg+xml';
+  let stampFileInput = $state<HTMLInputElement | null>(null);
+  let userStampCounter = 0;
+
+  async function handleStampFileChange(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const files = Array.from(input.files ?? []);
+    input.value = '';
+    if (files.length === 0) return;
+
+    let firstAsset: StampAsset | null = null;
+
+    for (const file of files) {
+      const url = URL.createObjectURL(file);
+      try {
+        await preloadStampImage(url);
+      } catch (error) {
+        console.error('Failed to load stamp image file:', file.name, error);
+        URL.revokeObjectURL(url);
+        continue;
+      }
+
+      const asset: StampAsset = {
+        id: `user-stamp-${Date.now()}-${userStampCounter++}`,
+        type: file.type === 'image/svg+xml' ? 'svg' : 'image',
+        content: url,
+        preview: url
+      };
+      onAddStampAsset?.(asset);
+      firstAsset ??= asset;
+    }
+
+    if (firstAsset) {
+      selectStampAsset(firstAsset);
+      pickerOpen = false;
+    }
+  }
+
   function handleDeleteStamp() {
     if (selectedStampId) {
       const updatedAreas = stampAreas.filter(area => area.id !== selectedStampId);
@@ -429,7 +476,8 @@
     } else {
       // For images and SVGs, load the image first to get actual aspect ratio
       preloadStampImage(asset.content).then((img) => {
-        const aspectRatio = img.width / img.height;
+        // SVGs without width/height attributes can report 0x0 — fall back to square
+        const aspectRatio = img.width > 0 && img.height > 0 ? img.width / img.height : 1;
 
         // Calculate width and height based on aspect ratio
         // Use defaultSize as the width for landscape, height for portrait
@@ -499,7 +547,7 @@
     <!-- Render stamp selection boxes -->
     {#if canvas}
       <svg class="stamp-svg">
-        {#each canvasStampAreas as canvasStamp}
+        {#each canvasStampAreas as canvasStamp (canvasStamp.id)}
           {@const isSelected = selectedStampId === canvasStamp.id}
           {@const handles = getResizeHandles(canvasStamp)}
           {@const rotHandle = getRotationHandlePosition(canvasStamp)}
@@ -519,7 +567,7 @@
 
           {#if isSelected}
             <!-- Resize handles (nw, ne, sw only - se is for rotation) -->
-            {#each ['nw', 'ne', 'sw'] as handleKey}
+            {#each RESIZE_HANDLE_KEYS as handleKey (handleKey)}
               {@const handle = handles[handleKey]}
               {@const cursor = handleKey === 'nw' ? 'nwse-resize' : 'nesw-resize'}
               <circle
@@ -594,7 +642,15 @@
     {#snippet children()}
       <div class="popover-title">{$_('editor.selectStamp')}</div>
       <div class="stamp-grid-pop">
-        {#each STAMP_ASSETS as asset}
+        <button
+          class="stamp-item-pop add-image"
+          onclick={() => { haptic('selection'); stampFileInput?.click(); }}
+          title={$_('editor.addStampImage')}
+          aria-label={$_('editor.addStampImage')}
+        >
+          <ImagePlus size={22} strokeWidth={1.8} />
+        </button>
+        {#each paletteAssets as asset (asset.id)}
           <button
             class="stamp-item-pop"
             class:selected={selectedStampAsset?.id === asset.id}
@@ -613,6 +669,15 @@
       </div>
     {/snippet}
   </Popover>
+
+  <input
+    bind:this={stampFileInput}
+    type="file"
+    accept={STAMP_FILE_ACCEPT}
+    multiple
+    onchange={handleStampFileChange}
+    hidden
+  />
 </div>
 
 <style lang="postcss">
@@ -668,6 +733,14 @@
   :global(.stamp-item-pop img) {
     max-width: 80%;
     max-height: 80%;
+  }
+  :global(.stamp-item-pop.add-image) {
+    border-style: dashed;
+    color: var(--tk-text-secondary);
+  }
+  :global(.stamp-item-pop.add-image:hover) {
+    color: var(--tk-accent);
+    border-color: var(--tk-accent);
   }
 
   .stamp-canvas-overlay {

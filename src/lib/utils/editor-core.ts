@@ -15,7 +15,7 @@ import type {
   Annotation,
   ExportOptions
 } from '../types';
-import { loadImage, calculateFitScale, downloadImage, applyTransformWithWebGPU } from './canvas';
+import { loadImage, calculateFitScale, downloadImage, applyTransformWithWebGPU, preloadStampImage } from './canvas';
 import { createEmptyHistory, createSnapshot, addToHistory, undo, redo, canUndo as checkCanUndo, canRedo as checkCanRedo, type EditorHistory, type EditorSnapshot } from './history';
 import { createDefaultAdjustments } from './adjustments';
 import { createViewport, updateViewport } from './viewport';
@@ -511,6 +511,13 @@ function encodeInWorker(imageData: ImageData, format: string, quality: number): 
  */
 export async function exportImage(state: EditorState): Promise<ExportResult | null> {
   if (!state.imageData.original) return null;
+
+  // Image/SVG stamps must be decoded before compositing — applyStamps bakes a
+  // gray placeholder into the output for any stamp missing from the cache.
+  const imageStamps = state.stampAreas.filter((s) => s.stampType !== 'emoji');
+  if (imageStamps.length > 0) {
+    await Promise.all(imageStamps.map((s) => preloadStampImage(s.stampContent).catch(() => null)));
+  }
 
   const _DEV = import.meta.env.DEV;
   if (_DEV) console.time('[export] total');

@@ -29,6 +29,7 @@
   "editor.undo": "元に戻す",
   "editor.redo": "やり直す",
   "editor.selectStamp": "スタンプを選択",
+  "editor.addStampImage": "画像を追加",
   "editor.acceptedFormats": "PNG · JPEG · WebP",
   "editor.doubleTapHint": "ダブルタップでズーム / 2本指で移動",
   "editor.openImage": "画像を開く",

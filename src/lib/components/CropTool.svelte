@@ -74,12 +74,58 @@
 
   function resetCrop() {
     if (!image) return;
-    cropArea = { x: 0, y: 0, width: image.width, height: image.height };
-    aspectLocked = false;
-    lockedAspectRatio = null;
+    if (fixedAspectRatio != null) {
+      // Fixed-ratio mode keeps the lock — reset back to the centered ratio frame
+      cropArea = centeredRatioCrop(fixedAspectRatio, image);
+    } else {
+      cropArea = { x: 0, y: 0, width: image.width, height: image.height };
+      aspectLocked = false;
+      lockedAspectRatio = null;
+    }
     haptic('warning');
     autoFit(300);
   }
+
+  interface Props {
+    canvas: HTMLCanvasElement | null;
+    image: HTMLImageElement | null;
+    viewport: Viewport;
+    transform: TransformState;
+    /** Previously-applied crop to seed the frame with (null = start from full image) */
+    seedCropArea?: CropArea | null;
+    /** Fixed aspect ratio (width / height). Locks the frame ratio and hides ratio controls. */
+    fixedAspectRatio?: number | null;
+    /** Overlay a circular guide inside the crop frame (avatar crops). Output stays rectangular. */
+    circularGuide?: boolean;
+    onApply: (cropArea: CropArea) => void;
+    onCancel: () => void;
+    onViewportChange?: (viewport: Partial<Viewport>) => void;
+    onTransformChange?: (transform: Partial<TransformState>) => void;
+  }
+
+  let {
+    canvas,
+    image,
+    viewport,
+    transform,
+    seedCropArea = null,
+    fixedAspectRatio = null,
+    circularGuide = false,
+    onApply,
+    onCancel,
+    onViewportChange,
+    onTransformChange
+  }: Props = $props();
+
+  let containerElement = $state<HTMLDivElement | null>(null);
+
+  // Crop area in image coordinates
+  let cropArea = $state<CropArea>({
+    x: 0,
+    y: 0,
+    width: 200,
+    height: 200
+  });
 
   // Display helpers
   let displayWidth = $derived(Math.round(cropArea.width));
@@ -101,41 +147,6 @@
       if (Math.abs(r - ratio) < 0.01) return label;
     }
     return null;
-  });
-
-  interface Props {
-    canvas: HTMLCanvasElement | null;
-    image: HTMLImageElement | null;
-    viewport: Viewport;
-    transform: TransformState;
-    /** Previously-applied crop to seed the frame with (null = start from full image) */
-    seedCropArea?: CropArea | null;
-    onApply: (cropArea: CropArea) => void;
-    onCancel: () => void;
-    onViewportChange?: (viewport: Partial<Viewport>) => void;
-    onTransformChange?: (transform: Partial<TransformState>) => void;
-  }
-
-  let {
-    canvas,
-    image,
-    viewport,
-    transform,
-    seedCropArea = null,
-    onApply,
-    onCancel,
-    onViewportChange,
-    onTransformChange
-  }: Props = $props();
-
-  let containerElement = $state<HTMLDivElement | null>(null);
-
-  // Crop area in image coordinates
-  let cropArea = $state<CropArea>({
-    x: 0,
-    y: 0,
-    width: 200,
-    height: 200
   });
 
   let isDragging = $state(false);
@@ -225,7 +236,27 @@
     if (image && !cropAreaInitialized) {
       // Seed the frame with the previously-applied crop, or the full image if none.
       cropAreaInitialized = true;
-      if (seedCropArea) {
+      if (fixedAspectRatio != null) {
+        // Fixed-ratio mode (avatar / banner crops): lock the ratio permanently.
+        // Reuse the previous crop only when it already matches the ratio.
+        aspectLocked = true;
+        lockedAspectRatio = fixedAspectRatio;
+        const seedMatches =
+          seedCropArea &&
+          Math.abs(seedCropArea.width / seedCropArea.height - fixedAspectRatio) < 0.01;
+        if (seedMatches && seedCropArea) {
+          const sx = Math.max(0, Math.min(image.width, seedCropArea.x));
+          const sy = Math.max(0, Math.min(image.height, seedCropArea.y));
+          cropArea = {
+            x: sx,
+            y: sy,
+            width: Math.max(1, Math.min(seedCropArea.width, image.width - sx)),
+            height: Math.max(1, Math.min(seedCropArea.height, image.height - sy))
+          };
+        } else {
+          cropArea = centeredRatioCrop(fixedAspectRatio, image);
+        }
+      } else if (seedCropArea) {
         const sx = Math.max(0, Math.min(image.width, seedCropArea.x));
         const sy = Math.max(0, Math.min(image.height, seedCropArea.y));
         cropArea = {
@@ -560,34 +591,33 @@
     onApply(cropArea);
   }
 
-  function setAspectRatio(ratio: number) {
-    if (!image) return;
-
+  // Largest centered crop of the given ratio that fits inside the image
+  function centeredRatioCrop(ratio: number, img: HTMLImageElement): CropArea {
     let newWidth: number;
     let newHeight: number;
-
-    // Calculate crop size to fill as much of the image as possible
-    const imageAspectRatio = image.width / image.height;
+    const imageAspectRatio = img.width / img.height;
 
     if (imageAspectRatio > ratio) {
-      // Image is wider than the target ratio
-      // Use full height, calculate width
-      newHeight = image.height;
+      // Image is wider than the target ratio — use full height, calculate width
+      newHeight = img.height;
       newWidth = newHeight * ratio;
     } else {
-      // Image is taller than the target ratio
-      // Use full width, calculate height
-      newWidth = image.width;
+      // Image is taller than the target ratio — use full width, calculate height
+      newWidth = img.width;
       newHeight = newWidth / ratio;
     }
 
-    // Center the crop area
-    cropArea = {
-      x: (image.width - newWidth) / 2,
-      y: (image.height - newHeight) / 2,
+    return {
+      x: (img.width - newWidth) / 2,
+      y: (img.height - newHeight) / 2,
       width: newWidth,
       height: newHeight
     };
+  }
+
+  function setAspectRatio(ratio: number) {
+    if (!image) return;
+    cropArea = centeredRatioCrop(ratio, image);
     autoFit(300);
   }
 
@@ -837,17 +867,27 @@
       pointer-events: none;
     "
   >
-    <!-- Dark overlay outside crop area -->
+    <!-- Dark overlay outside crop area (outside the guide circle in circular mode) -->
     <defs>
       <mask id="crop-mask">
         <rect width="100%" height="100%" fill="white" />
-        <rect
-          x={canvasCoords.x}
-          y={canvasCoords.y}
-          width={canvasCoords.width}
-          height={canvasCoords.height}
-          fill="black"
-        />
+        {#if circularGuide}
+          <ellipse
+            cx={canvasCoords.x + canvasCoords.width / 2}
+            cy={canvasCoords.y + canvasCoords.height / 2}
+            rx={canvasCoords.width / 2}
+            ry={canvasCoords.height / 2}
+            fill="black"
+          />
+        {:else}
+          <rect
+            x={canvasCoords.x}
+            y={canvasCoords.y}
+            width={canvasCoords.width}
+            height={canvasCoords.height}
+            fill="black"
+          />
+        {/if}
       </mask>
     </defs>
     <rect
@@ -858,7 +898,8 @@
       style="pointer-events: none;"
     />
 
-    <!-- Frame border (solid white) — also catches inside drag → pan -->
+    <!-- Frame border (solid white) — also catches inside drag → pan.
+         Dimmed in circular mode so the circle guide reads as primary. -->
     <rect
       x={canvasCoords.x}
       y={canvasCoords.y}
@@ -867,11 +908,27 @@
       fill="transparent"
       stroke="var(--tk-crop-border)"
       stroke-width={frameStrokeWidth}
+      opacity={circularGuide ? 0.35 : 1}
       style="pointer-events: all; cursor: grab;"
       onmousedown={(e) => handleMouseDown(e)}
       ontouchstart={(e) => handleMouseDown(e)}
     />
 
+    {#if circularGuide}
+      <!-- Circular avatar guide — inscribed in the crop frame -->
+      <ellipse
+        cx={canvasCoords.x + canvasCoords.width / 2}
+        cy={canvasCoords.y + canvasCoords.height / 2}
+        rx={canvasCoords.width / 2}
+        ry={canvasCoords.height / 2}
+        fill="none"
+        stroke="var(--tk-crop-border)"
+        stroke-width={frameStrokeWidth}
+        style="pointer-events: none;"
+      />
+    {/if}
+
+    {#if !circularGuide}
     <!-- Grid lines (rule of thirds) — brighter while dragging -->
     <line
       x1={canvasCoords.x + canvasCoords.width / 3}
@@ -909,6 +966,7 @@
       stroke-width="1"
       style="pointer-events: none; transition: stroke 0.2s;"
     />
+    {/if}
 
     <!-- ─── Edge bars ─── center 1/3 of each edge, fat white line -->
     <!-- Top edge -->
@@ -1094,34 +1152,36 @@
 
       <span class="rail-divider" aria-hidden="true"></span>
 
-      <button
-        bind:this={aspectAnchor}
-        type="button"
-        class="rail-color-trigger"
-        class:open={aspectPopoverOpen}
-        aria-label="Aspect ratio"
-        title="Aspect ratio"
-        onclick={toggleAspectPopover}
-      >
-        <CropIcon size={20} strokeWidth={1.8} />
-      </button>
+      {#if fixedAspectRatio == null}
+        <button
+          bind:this={aspectAnchor}
+          type="button"
+          class="rail-color-trigger"
+          class:open={aspectPopoverOpen}
+          aria-label="Aspect ratio"
+          title="Aspect ratio"
+          onclick={toggleAspectPopover}
+        >
+          <CropIcon size={20} strokeWidth={1.8} />
+        </button>
 
-      <RailButton
-        label={aspectLocked ? 'Unlock aspect' : 'Lock aspect'}
-        pressed={aspectLocked}
-        haptics={false}
-        onclick={toggleAspectLock}
-      >
-        {#if aspectLocked}
-          <Lock size={18} strokeWidth={2} />
-        {:else}
-          <Unlock size={18} strokeWidth={2} />
-        {/if}
-      </RailButton>
+        <RailButton
+          label={aspectLocked ? 'Unlock aspect' : 'Lock aspect'}
+          pressed={aspectLocked}
+          haptics={false}
+          onclick={toggleAspectLock}
+        >
+          {#if aspectLocked}
+            <Lock size={18} strokeWidth={2} />
+          {:else}
+            <Unlock size={18} strokeWidth={2} />
+          {/if}
+        </RailButton>
 
-      <RailButton label="Swap orientation" haptics="light" onclick={swapOrientation}>
-        <Repeat2 size={20} strokeWidth={1.8} />
-      </RailButton>
+        <RailButton label="Swap orientation" haptics="light" onclick={swapOrientation}>
+          <Repeat2 size={20} strokeWidth={1.8} />
+        </RailButton>
+      {/if}
 
       <RailButton label="Fit to screen" haptics="light" onclick={fitToScreen}>
         <Maximize2 size={18} strokeWidth={2} />
@@ -1135,6 +1195,7 @@
     {/snippet}
   </FloatingRail>
 
+  {#if fixedAspectRatio == null}
   <Popover open={aspectPopoverOpen} onClose={() => (aspectPopoverOpen = false)} side="left" anchor={aspectAnchor}>
     {#snippet children()}
       <div class="popover-title">Aspect ratio</div>
@@ -1152,6 +1213,7 @@
       </div>
     {/snippet}
   </Popover>
+  {/if}
   </div>
 {/if}
 
